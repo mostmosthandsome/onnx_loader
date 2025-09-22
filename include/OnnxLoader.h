@@ -16,5 +16,6 @@ namespace handsome
 
         std::vector<int> rows;  // 每层输出神经元数
         std::vector<int> cols;  // 每层输入神经元数
+        int num_layers;
     };
 }

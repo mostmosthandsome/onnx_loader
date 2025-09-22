@@ -26,7 +26,9 @@ public:
     cl_uint ret_num_platforms;
     cl_int err;
     cl_mem input_buff,output_buff1,output_buff2;
-    cl_mem weight_buff[4],bias_buff[4];
+    std::vector<cl_mem> weight_buff,bias_buff;
+
+    int input_dim,output_dim;
 };
 
 CustomKernel::CustomKernel():data_ptr(std::make_unique<CustomKernelPrivate>())
@@ -72,8 +74,8 @@ CustomKernel::~CustomKernel()
   data_ptr->err = clReleaseCommandQueue(data_ptr->queue);
   data_ptr->err = clReleaseContext(data_ptr->context);
 
-  for(int i = 0; i < 4; ++i)  data_ptr->err = clReleaseMemObject(data_ptr->weight_buff[i]);
-  for(int i = 0; i < 4; ++i)  data_ptr->err = clReleaseMemObject(data_ptr->bias_buff[i]);
+  for(int i = 0; i < model_ptr->num_layers; ++i)  data_ptr->err = clReleaseMemObject(data_ptr->weight_buff[i]);
+  for(int i = 0; i < model_ptr->num_layers; ++i)  data_ptr->err = clReleaseMemObject(data_ptr->bias_buff[i]);
   data_ptr->err = clReleaseMemObject(data_ptr->input_buff);
   data_ptr->err = clReleaseMemObject(data_ptr->output_buff1),data_ptr->err = clReleaseMemObject(data_ptr->output_buff2);
 }
@@ -146,85 +148,51 @@ void CustomKernel::load_onnx_model(std::string file_name)
 {
     model_ptr->load_model(file_name);
     
-    // net.0.weight
-    data_ptr->weight_buff[0] = clCreateBuffer(
-        data_ptr->context,
-        CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
-        sizeof(float) * 512 * 265,
-        model_ptr->weight0,
-        &data_ptr->err
-    );
-    if (data_ptr->err < 0) { perror("Couldn't create weight_buff[0]"); exit(1); }
+    size_t num_layers = model_ptr->num_layers;
 
-    // net.0.bias
-    data_ptr->bias_buff[0] = clCreateBuffer(
-        data_ptr->context,
-        CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
-        sizeof(float) * 512,
-        model_ptr->bias0,
-        &data_ptr->err
-    );
-    if (data_ptr->err < 0) { perror("Couldn't create bias_buff[0]"); exit(1); }
+    // 预分配 cl_mem 向量
+    data_ptr->weight_buff.resize(num_layers),data_ptr->bias_buff.resize(num_layers);
+    data_ptr->input_dim = model_ptr->cols[0],data_ptr->output_dim = model_ptr->rows[num_layers - 1];
 
-    // net.2.weight
-    data_ptr->weight_buff[1] = clCreateBuffer(
-        data_ptr->context,
-        CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
-        sizeof(float) * 256 * 512,
-        model_ptr->weight1,
-        &data_ptr->err
-    );
-    if (data_ptr->err < 0) { perror("Couldn't create weight_buff[1]"); exit(1); }
+    for (size_t i = 0; i < num_layers; i++) {
+        int out_dim = model_ptr->rows[i];
+        int in_dim  = model_ptr->cols[i];
 
-    // net.2.bias
-    data_ptr->bias_buff[1] = clCreateBuffer(
-        data_ptr->context,
-        CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
-        sizeof(float) * 256,
-        model_ptr->bias1,
-        &data_ptr->err
-    );
-    if (data_ptr->err < 0) { perror("Couldn't create bias_buff[1]"); exit(1); }
+        // 展平权重矩阵
+        std::vector<float> flat_weight;
+        flat_weight.reserve(out_dim * in_dim);
+        for (int r = 0; r < out_dim; r++) {
+            flat_weight.insert(flat_weight.end(),
+                            model_ptr->weights[i][r].begin(),
+                            model_ptr->weights[i][r].end());
+        }
 
-    // net.4.weight
-    data_ptr->weight_buff[2] = clCreateBuffer(
-        data_ptr->context,
-        CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
-        sizeof(float) * 128 * 256,
-        model_ptr->weight2,
-        &data_ptr->err
-    );
-    if (data_ptr->err < 0) { perror("Couldn't create weight_buff[2]"); exit(1); }
+        // 创建权重 buffer
+        data_ptr->weight_buff[i] = clCreateBuffer(
+            data_ptr->context,
+            CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
+            sizeof(float) * flat_weight.size(),
+            flat_weight.data(),
+            &data_ptr->err
+        );
+        if (data_ptr->err < 0) {
+            perror(("Couldn't create weight_buff[" + std::to_string(i) + "]").c_str());
+            exit(1);
+        }
 
-    // net.4.bias
-    data_ptr->bias_buff[2] = clCreateBuffer(
-        data_ptr->context,
-        CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
-        sizeof(float) * 128,
-        model_ptr->bias2,
-        &data_ptr->err
-    );
-    if (data_ptr->err < 0) { perror("Couldn't create bias_buff[2]"); exit(1); }
-
-    // net.6.weight
-    data_ptr->weight_buff[3] = clCreateBuffer(
-        data_ptr->context,
-        CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
-        sizeof(float) * 12 * 128,
-        model_ptr->weight3,
-        &data_ptr->err
-    );
-    if (data_ptr->err < 0) { perror("Couldn't create weight_buff[3]"); exit(1); }
-
-    // net.6.bias
-    data_ptr->bias_buff[3] = clCreateBuffer(
-        data_ptr->context,
-        CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
-        sizeof(float) * 12,
-        model_ptr->bias3,
-        &data_ptr->err
-    );
-    if (data_ptr->err < 0) { perror("Couldn't create bias_buff[3]"); exit(1); }
+        // 创建 bias buffer
+        data_ptr->bias_buff[i] = clCreateBuffer(
+            data_ptr->context,
+            CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
+            sizeof(float) * model_ptr->biases[i].size(),
+            model_ptr->biases[i].data(),
+            &data_ptr->err
+        );
+        if (data_ptr->err < 0) {
+            perror(("Couldn't create bias_buff[" + std::to_string(i) + "]").c_str());
+            exit(1);
+        }   
+    }
 
 }
 
@@ -235,7 +203,7 @@ void CustomKernel::inference(float input[],float output[])
     data_ptr->input_buff = clCreateBuffer(
         data_ptr->context,
         CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
-        sizeof(float) * 265,
+        sizeof(float) * data_ptr->input_dim,
         input,
         &data_ptr->err
     );
@@ -247,7 +215,7 @@ void CustomKernel::inference(float input[],float output[])
     double cpu_time_used;
 
     start = clock();   // ==== 开始计时 ====
-    for(int i = 0; i < 4; ++i)
+    for(int i = 0; i < model_ptr->num_layers; ++i)
     {
         
         global_size = model_ptr->rows[i];   // 每个 work-item 负责一行
@@ -275,7 +243,7 @@ void CustomKernel::inference(float input[],float output[])
                             sizeof(float) * model_ptr->rows[i],
                             host_out.data(), 0, NULL, NULL);
 
-        if(i == 3) break;
+        if(i == model_ptr->num_layers - 1) break;
 
         clSetKernelArg(data_ptr->elu_kernel, 0, sizeof(cl_mem), &data_ptr->output_buff2);
         clSetKernelArg(data_ptr->elu_kernel, 1, sizeof(cl_mem), &data_ptr->output_buff1);
@@ -306,7 +274,7 @@ void CustomKernel::inference(float input[],float output[])
       data_ptr->output_buff2,
       CL_TRUE,
       0,
-      sizeof(float) * 12,
+      sizeof(float) * data_ptr->output_dim,
       output,
       0,
       NULL,

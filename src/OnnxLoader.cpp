@@ -52,30 +52,27 @@ void OnnxLoader::load_model(std::string filename)
             std::cerr << "Unrecognized tensor name: " << name << "\n";
             continue;
         }
-
         if (is_weight) {
-            if ((int)weights.size() <= layer_id)    weights.resize(layer_id + 1);
+            if ((int)weights.size() <= layer_id)   weights.resize(layer_id + 1),rows.resize(layer_id + 1),cols.resize(layer_id + 1);
 
             // ONNX tensor 是按行存储 (out_dim × in_dim)
-            // 需要你提前知道 rows[layer_id], cols[layer_id]
-            int out_dim = tensor.dims(0);
-            int in_dim  = tensor.dims(1);
+            rows[layer_id] =  tensor.dims(0),cols[layer_id] = tensor.dims(1);
 
-            if (num_elem != (size_t)(out_dim * in_dim)) {
+            if (num_elem != (size_t)(rows[layer_id] * cols[layer_id])) {
                 std::cerr << "Shape mismatch for " << name << "\n";
                 continue;
             }
 
-            weights[layer_id].assign(out_dim, std::vector<float>(in_dim));
-            for (int i = 0; i < out_dim; i++)
-                for (int j = 0; j < in_dim; j++)
-                    weights[layer_id][i][j] = src[i * in_dim + j];
+            weights[layer_id].assign(rows[layer_id], std::vector<float>(cols[layer_id]));
+            for (int i = 0; i < rows[layer_id]; i++)
+                for (int j = 0; j < cols[layer_id]; j++)
+                    weights[layer_id][i][j] = src[i * cols[layer_id] + j];
         }
         else if (is_bias) {
             if ((int)biases.size() <= layer_id)
                 biases.resize(layer_id + 1);
 
-            int out_dim = rows[layer_id];
+            int out_dim = tensor.dims(0);
             if (num_elem != (size_t)out_dim) {
                 std::cerr << "Shape mismatch for " << name << "\n";
                 continue;
@@ -83,6 +80,6 @@ void OnnxLoader::load_model(std::string filename)
 
             biases[layer_id].assign(src, src + out_dim);
         }
-
-        
+    }
+    num_layers = weights.size();
 }
