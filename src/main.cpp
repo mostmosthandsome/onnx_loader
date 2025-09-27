@@ -11,7 +11,19 @@ int main()
   handsome::CustomKernel test_kernel;
   test_kernel.load_openCL_code("src/mat_op.cl");
   test_kernel.load_onnx_model("config/actor.onnx");
+  
+    clock_t start, end;
+    double cpu_time_used;
+
+  start = clock();   // ==== 开始计时 ====
+  
   test_kernel.inference(input,output);
+  
+
+  end = clock();   // ==== 结束计时 ====
+
+  cpu_time_used = ((double) (end - start)) / CLOCKS_PER_SEC * 1000.0; // 毫秒
+  printf("Total execution time: %f ms\n", cpu_time_used);
   for(int i = 0; i < 12; ++i)  std::cout << fixed << setprecision(7) << output[i] << ' ';
   putchar(10);
   return 0;

@@ -7,7 +7,7 @@ find_package(Protobuf REQUIRED CONFIG)
 # 编译选项
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -O3 -mfloat-abi=hard -mfpu=neon -mtune=cortex-a9 -fpermissive")
 
-set(SRC_FILES
+set(Custom_KERNEL_FILES
     src/main.cpp
     src/onnx.pb.cc
     src/CustomKernel.cpp
@@ -20,13 +20,18 @@ include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
 
+add_library(CustomKernel ${Custom_KERNEL_FILES})
+
 # 链接库路径
 link_directories(
     /root/workspace/04_opencl_demo/vip_driver/sdk/drivers #libOpenCL.so所在目录
 )
 
+target_link_libraries(CustomKernel PRIVATE OpenCL protobuf::libprotobuf)
+
 # 可执行文件
-add_executable(onnx_load ${SRC_FILES})
+add_executable(main main.cpp)
+
 
 # 链接
-target_link_libraries(onnx_load PRIVATE OpenCL protobuf::libprotobuf)
+target_link_libraries(main PRIVATE CustomKernel)
