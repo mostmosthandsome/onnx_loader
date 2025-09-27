@@ -35,5 +35,5 @@ add_executable(main src/main.cpp)
 target_link_libraries(main PRIVATE CustomKernel)
 
 #测试
-add_executable(model_check test/model_check.cpp)
+add_executable(model_check test/model_check.cpp  src/onnx.pb.cc)
 target_link_libraries(model_check PRIVATE protobuf::libprotobuf)
