@@ -27,11 +27,13 @@ link_directories(
     /root/workspace/04_opencl_demo/vip_driver/sdk/drivers #libOpenCL.so所在目录
 )
 
+#编译成库
 target_link_libraries(CustomKernel PRIVATE OpenCL protobuf::libprotobuf)
 
-# 可执行文件
-add_executable(main main.cpp)
+# 标准输入输出测试样例
+add_executable(main src/main.cpp)
+target_link_libraries(main PRIVATE CustomKernel)
 
-
-# 链接
+#测试
+add_executable(model_check test/model_check.cpp)
 target_link_libraries(main PRIVATE CustomKernel)
