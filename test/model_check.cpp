@@ -17,9 +17,14 @@ int main()
 
     const onnx::GraphProto& graph = onnx_model.graph();
 
-     for (const auto& tensor : graph.initializer()) {
+    std::cout << "Model has " << graph.input_size() << " inputs:" << std::endl;
+    for (const auto& input : graph.input()) {
+        std::cout << "  input name : " << input.name() << std::endl;
+    }
+
+    for (const auto& tensor : graph.initializer()) {
         const std::string& name = tensor.name();
         std::cout << "layer name : " << name << std::endl;
-        
-     }
+
+    }
 }

@@ -36,4 +36,4 @@ target_link_libraries(main PRIVATE CustomKernel)
 
 #测试
 add_executable(model_check test/model_check.cpp)
-target_link_libraries(main PRIVATE CustomKernel)
+target_link_libraries(model_check PRIVATE protobuf::libprotobuf)
