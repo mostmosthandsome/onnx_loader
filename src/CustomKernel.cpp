@@ -178,9 +178,12 @@ void CustomKernel::load_onnx_model(std::string file_name)
 {
     //create model
     data_ptr->model_ptr = std::make_shared<OnnxLoader>(file_name);
+    //load the params of mlp "net" 
     data_ptr->net_ptr = std::make_shared<MlpDataMemory>();
     data_ptr->load_mlp_params(data_ptr->net_ptr,"net");//测试网络中的名字叫做net
     data_ptr->input_dim =  data_ptr->net_ptr->input_dim,data_ptr->output_dim =  data_ptr->net_ptr->output_dim;
+    
+    std::cout << "load model successfully!\n";
 }
 
 
@@ -219,7 +222,7 @@ void CustomKernel::inference(float input[],float output[])
 void CustomKernel::CustomKernelPrivate::load_mlp_params(std::shared_ptr<MlpDataMemory> mlp_ptr,std::string mlp_name)
 {
     //先从创建好的模型中读取mlp数据
-    std::shared_ptr<MlpParam> mlp_param_data;
+    std::shared_ptr<MlpParam> mlp_param_data = std::make_shared<MlpParam>();
     model_ptr->load_mlp_param(mlp_param_data,mlp_name);
     int num_layers = mlp_param_data->num_layers;
     mlp_ptr->num_layers = num_layers;
