@@ -59,7 +59,7 @@ public:
     /**
      * @brief do a inference of mlp_data_ptr, output will be put in output_buff2
     */
-    void InferenceMlp(cl_mem input_buff,std::shared_ptr<MlpDataMemory> mlp_data_ptr)
+    void InferenceMlp(cl_mem input_buff,std::shared_ptr<MlpDataMemory> mlp_data_ptr);
 
 };
 
@@ -74,8 +74,6 @@ CustomKernel::CustomKernel():data_ptr(std::make_unique<CustomKernelPrivate>())
 
     /* 创建命令队列 */
     data_ptr->queue = clCreateCommandQueue(data_ptr->context, data_ptr->device, 0, &data_ptr->err);
-
-    actor_ptr = std::make_shared<MlpLoader>();
 
     data_ptr->output_buff1 = clCreateBuffer(
         data_ptr->context,
@@ -179,7 +177,9 @@ void CustomKernel::load_openCL_code(std::string file_name)
 
 void CustomKernel::load_onnx_model(std::string file_name)
 {
-    actor_ptr->load_model(file_name);
+    //create model
+    data_ptr->model_ptr = std::make_shared<OnnxLoader>(),data_ptr->model_ptr->load_model(file_name);
+    data_ptr->net_ptr = std::make_shared<MlpDataMemory>();
     data_ptr->load_mlp_params(data_ptr->net_ptr,"net");//测试网络中的名字叫做net
     data_ptr->input_dim =  data_ptr->net_ptr->input_dim,data_ptr->output_dim =  data_ptr->net_ptr->output_dim;
 }
