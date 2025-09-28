@@ -277,26 +277,26 @@ void CustomKernel::CustomKernelPrivate::InferenceMlp(cl_mem input_buff,std::shar
     {
         global_size = mlp_data_ptr->rows[i];   // 每个 work-item 负责一行
         //设置 kernel 参数
-        clSetKernelArg(mat_kernel, 0, sizeof(cl_mem), &mlp_actor_ptr->weight_buff[i]);
+        clSetKernelArg(mat_kernel, 0, sizeof(cl_mem), &mlp_data_ptr->weight_buff[i]);
         if(i == 0)  clSetKernelArg(mat_kernel, 1, sizeof(cl_mem), &input_buff);
         else        clSetKernelArg(mat_kernel, 1, sizeof(cl_mem), &output_buff1);
-        clSetKernelArg(mat_kernel, 2, sizeof(cl_mem), &mlp_actor_ptr->bias_buff[i]);
+        clSetKernelArg(mat_kernel, 2, sizeof(cl_mem), &mlp_data_ptr->bias_buff[i]);
         clSetKernelArg(mat_kernel, 3, sizeof(cl_mem), &output_buff2);
         clSetKernelArg(mat_kernel, 4, sizeof(int), &mlp_data_ptr->rows[i]);
         clSetKernelArg(mat_kernel, 5, sizeof(int), &mlp_data_ptr->cols[i]);
-        data_ptr->err = clEnqueueNDRangeKernel(queue, mat_kernel, 1, NULL,
+        err = clEnqueueNDRangeKernel(queue, mat_kernel, 1, NULL,
                                     &global_size, NULL, 0, NULL, 
             &kernel_event);
             
         // 等待 kernel 完成
         clWaitForEvents(1, &kernel_event);
 
-        if(i == model_ptr->num_layers - 1) break;
+        if(i == mlp_data_ptr->num_layers - 1) break;
 
         clSetKernelArg(elu_kernel, 0, sizeof(cl_mem), &output_buff2);
         clSetKernelArg(elu_kernel, 1, sizeof(cl_mem), &output_buff1);
         clSetKernelArg(elu_kernel, 2, sizeof(int), &mlp_data_ptr->rows[i]);
-        data_ptr->err = clEnqueueNDRangeKernel(queue, elu_kernel, 1, NULL,
+        err = clEnqueueNDRangeKernel(queue, elu_kernel, 1, NULL,
                                     &global_size, NULL, 0, NULL, 
             &kernel_event);
 
