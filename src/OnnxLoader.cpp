@@ -6,6 +6,7 @@ using namespace handsome;
 
 OnnxLoader::OnnxLoader(std::string filename)
 {
+    std::cout << "Loading model from: " << filename << std::endl;
     std::ifstream fin(filename, std::ios::in | std::ios::binary);
     if (!fin) {
         std::cerr << "Failed to open model file" << std::endl;
@@ -19,13 +20,13 @@ OnnxLoader::OnnxLoader(std::string filename)
     }
 
      // 获取 graph
-    graph = onnx_model.graph();
+    graph_ptr = std::make_shared<onnx::GraphProto>(onnx_model.graph());
 }
 
 void OnnxLoader::load_mlp_param(std::shared_ptr<MlpParam> mlp_param,std::string mlp_name)
 {
         // 遍历 initializer（权重参数）
-    for (const auto& tensor : graph.initializer()) {
+    for (const auto& tensor : graph_ptr->initializer()) {
         const std::string& name = tensor.name();
         const std::string& raw  = tensor.raw_data();
         const float* src = reinterpret_cast<const float*>(raw.data());

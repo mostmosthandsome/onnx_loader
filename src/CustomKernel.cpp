@@ -178,6 +178,7 @@ void CustomKernel::load_onnx_model(std::string file_name)
 {
     //create model
     data_ptr->model_ptr = std::make_shared<OnnxLoader>(file_name);
+    std::cout << "pure model load successfully!\n";
     //load the params of mlp "net" 
     data_ptr->net_ptr = std::make_shared<MlpDataMemory>();
     data_ptr->load_mlp_params(data_ptr->net_ptr,"net");//测试网络中的名字叫做net
@@ -223,14 +224,16 @@ void CustomKernel::CustomKernelPrivate::load_mlp_params(std::shared_ptr<MlpDataM
 {
     //先从创建好的模型中读取mlp数据
     std::shared_ptr<MlpParam> mlp_param_data = std::make_shared<MlpParam>();
+    std::cout << "ready to load mlp param called " << mlp_name << std::endl;
     model_ptr->load_mlp_param(mlp_param_data,mlp_name);
+    std::cout << "load mlp param successfully!\n";
     int num_layers = mlp_param_data->num_layers;
     mlp_ptr->num_layers = num_layers;
     mlp_ptr->weight_buff.resize(num_layers), mlp_ptr->bias_buff.resize(num_layers),mlp_ptr->rows.resize(num_layers),mlp_ptr->cols.resize(num_layers);
     mlp_ptr->input_dim = mlp_param_data->cols[0], mlp_ptr->output_dim = mlp_param_data->rows[num_layers - 1];
 
     //创建cl_mem
-    for (size_t i = 0; i < num_layers; i++) {
+    for (int i = 0; i < num_layers; ++i) {
         int out_dim = mlp_param_data->rows[i];
         int in_dim  = mlp_param_data->cols[i];
         mlp_ptr->rows[i] =  mlp_param_data->rows[i],mlp_ptr->cols[i] = mlp_param_data->cols[i];

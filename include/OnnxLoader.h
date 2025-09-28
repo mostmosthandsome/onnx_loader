@@ -22,7 +22,6 @@ namespace handsome
         void load_mlp_param(std::shared_ptr<MlpParam> mlp_param,std::string mlp_name);
 
     private:
-        onnx::GraphProto& graph;
-
+        std::shared_ptr< onnx::GraphProto > graph_ptr;
     };
 }
