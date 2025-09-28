@@ -13,6 +13,15 @@
 
 using namespace handsome;
 
+class CustomKernel::MlpDataMemory
+{
+public:
+    std::vector<cl_mem> weight_buff,bias_buff;
+    int num_layers;
+    std::vector<int> rows;
+    int input_dim,output_dim;
+}
+
 class CustomKernel::CustomKernelPrivate
 {
 public:
@@ -26,9 +35,8 @@ public:
     cl_uint ret_num_platforms;
     cl_int err;
     cl_mem input_buff,output_buff1,output_buff2;
-    std::vector<cl_mem> weight_buff,bias_buff;
-
     int input_dim,output_dim;
+
 };
 
 CustomKernel::CustomKernel():data_ptr(std::make_unique<CustomKernelPrivate>())
@@ -74,8 +82,8 @@ CustomKernel::~CustomKernel()
   data_ptr->err = clReleaseCommandQueue(data_ptr->queue);
   data_ptr->err = clReleaseContext(data_ptr->context);
 
-  for(int i = 0; i < model_ptr->num_layers; ++i)  data_ptr->err = clReleaseMemObject(data_ptr->weight_buff[i]);
-  for(int i = 0; i < model_ptr->num_layers; ++i)  data_ptr->err = clReleaseMemObject(data_ptr->bias_buff[i]);
+  for(int i = 0; i < model_ptr->num_layers; ++i)  data_ptr->err = clReleaseMemObject(actor_ptr->weight_buff[i]);
+  for(int i = 0; i < model_ptr->num_layers; ++i)  data_ptr->err = clReleaseMemObject(actor_ptr->bias_buff[i]);
   data_ptr->err = clReleaseMemObject(data_ptr->input_buff);
   data_ptr->err = clReleaseMemObject(data_ptr->output_buff1),data_ptr->err = clReleaseMemObject(data_ptr->output_buff2);
 }
@@ -151,8 +159,9 @@ void CustomKernel::load_onnx_model(std::string file_name)
     size_t num_layers = model_ptr->num_layers;
 
     // 预分配 cl_mem 向量
-    data_ptr->weight_buff.resize(num_layers),data_ptr->bias_buff.resize(num_layers);
-    data_ptr->input_dim = model_ptr->cols[0],data_ptr->output_dim = model_ptr->rows[num_layers - 1];
+    actor_ptr->weight_buff.resize(num_layers),actor_ptr->bias_buff.resize(num_layers);
+    actor_ptr->input_dim = model_ptr->cols[0],actor_ptr->output_dim = model_ptr->rows[num_layers - 1];
+    data_ptr->input_dim = actor_ptr->input_dim,data_ptr->output_dim = actor_ptr->output_dim;
 
     for (size_t i = 0; i < num_layers; i++) {
         int out_dim = model_ptr->rows[i];
@@ -168,7 +177,7 @@ void CustomKernel::load_onnx_model(std::string file_name)
         }
 
         // 创建权重 buffer
-        data_ptr->weight_buff[i] = clCreateBuffer(
+        actor_ptr->weight_buff[i] = clCreateBuffer(
             data_ptr->context,
             CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
             sizeof(float) * flat_weight.size(),
@@ -181,7 +190,7 @@ void CustomKernel::load_onnx_model(std::string file_name)
         }
 
         // 创建 bias buffer
-        data_ptr->bias_buff[i] = clCreateBuffer(
+        actor_ptr->bias_buff[i] = clCreateBuffer(
             data_ptr->context,
             CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
             sizeof(float) * model_ptr->biases[i].size(),
@@ -196,33 +205,22 @@ void CustomKernel::load_onnx_model(std::string file_name)
 
 }
 
-
-void CustomKernel::inference(float input[],float output[])
+void CustomKernel::InferenceMlp(cl_mem input_buff,std::shared_ptr<MlpDataMemory> mlp_data_ptr)
 {
-    // 创建输入的向量 buffer，并拷贝数据
-    data_ptr->input_buff = clCreateBuffer(
-        data_ptr->context,
-        CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
-        sizeof(float) * data_ptr->input_dim,
-        input,
-        &data_ptr->err
-    );
-    if (data_ptr->err < 0) { perror("Couldn't create vec buffer"); exit(1); }
-    cl_event kernel_event;
     size_t global_size;
-    
-    for(int i = 0; i < model_ptr->num_layers; ++i)
+    cl_event kernel_event;
+    for(int i = 0; i < mlp_data_ptr->num_layers; ++i)
     {
         
-        global_size = model_ptr->rows[i];   // 每个 work-item 负责一行
+        global_size = mlp_data_ptr->rows[i];   // 每个 work-item 负责一行
         //设置 kernel 参数
-        clSetKernelArg(data_ptr->mat_kernel, 0, sizeof(cl_mem), &data_ptr->weight_buff[i]);
-        if(i == 0)  clSetKernelArg(data_ptr->mat_kernel, 1, sizeof(cl_mem), &data_ptr->input_buff);
+        clSetKernelArg(data_ptr->mat_kernel, 0, sizeof(cl_mem), &mlp_actor_ptr->weight_buff[i]);
+        if(i == 0)  clSetKernelArg(data_ptr->mat_kernel, 1, sizeof(cl_mem), &input_buff);
         else        clSetKernelArg(data_ptr->mat_kernel, 1, sizeof(cl_mem), &data_ptr->output_buff1);
-        clSetKernelArg(data_ptr->mat_kernel, 2, sizeof(cl_mem), &data_ptr->bias_buff[i]);
+        clSetKernelArg(data_ptr->mat_kernel, 2, sizeof(cl_mem), &mlp_actor_ptr->bias_buff[i]);
         clSetKernelArg(data_ptr->mat_kernel, 3, sizeof(cl_mem), &data_ptr->output_buff2);
-        clSetKernelArg(data_ptr->mat_kernel, 4, sizeof(int), &model_ptr->rows[i]);
-        clSetKernelArg(data_ptr->mat_kernel, 5, sizeof(int), &model_ptr->cols[i]);
+        clSetKernelArg(data_ptr->mat_kernel, 4, sizeof(int), &mlp_data_ptr->rows[i]);
+        clSetKernelArg(data_ptr->mat_kernel, 5, sizeof(int), &mlp_data_ptr->cols[i]);
         data_ptr->err = clEnqueueNDRangeKernel(data_ptr->queue, data_ptr->mat_kernel, 1, NULL,
                                     &global_size, NULL, 0, NULL, 
             &kernel_event);
@@ -230,19 +228,10 @@ void CustomKernel::inference(float input[],float output[])
         // 等待 kernel 完成
         clWaitForEvents(1, &kernel_event);
 
-        // --- 矩阵乘法结果 ---
-        std::vector<float> host_out(model_ptr->rows[i]);
-
-        // 从 device -> host 读回 output_buff2
-        clEnqueueReadBuffer(data_ptr->queue, data_ptr->output_buff2,
-                            CL_TRUE, 0,
-                            sizeof(float) * model_ptr->rows[i],
-                            host_out.data(), 0, NULL, NULL);
-
         if(i == model_ptr->num_layers - 1) break;
 
-        clSetKernelArg(data_ptr->elu_kernel, 0, sizeof(cl_mem), &data_ptr->output_buff2);
-        clSetKernelArg(data_ptr->elu_kernel, 1, sizeof(cl_mem), &data_ptr->output_buff1);
+        clSetKernelArg(data_ptr->elu_kernel, 0, sizeof(cl_mem), &mlp_data_ptr->output_buff2);
+        clSetKernelArg(data_ptr->elu_kernel, 1, sizeof(cl_mem), &mlp_data_ptr->output_buff1);
         clSetKernelArg(data_ptr->elu_kernel, 2, sizeof(int), &model_ptr->rows[i]);
         data_ptr->err = clEnqueueNDRangeKernel(data_ptr->queue, data_ptr->elu_kernel, 1, NULL,
                                     &global_size, NULL, 0, NULL, 
@@ -252,13 +241,24 @@ void CustomKernel::inference(float input[],float output[])
         // 等待 kernel 完成
         clWaitForEvents(1, &kernel_event);
 
-        clEnqueueReadBuffer(data_ptr->queue, data_ptr->output_buff1,
-                    CL_TRUE, 0,
-                    sizeof(float) * model_ptr->rows[i],
-                    host_out.data(), 0, NULL, NULL);
-
       
     }
+}
+
+void CustomKernel::inference(float input[],float output[])
+{
+    // 创建输入的向量 buffer，并拷贝数据
+    data_ptr->input_buff = clCreateBuffer(
+        data_ptr->context,
+        CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
+        sizeof(float) * actor_ptr->input_dim,
+        input,
+        &data_ptr->err
+    );
+    if (data_ptr->err < 0) { perror("Couldn't create vec buffer"); exit(1); }
+
+    InferenceMlp(data_ptr->input_buff,actor_ptr);
+
     // 6. 读回结果
     data_ptr->err = clEnqueueReadBuffer(
       data_ptr->queue,

@@ -3,10 +3,10 @@
 
 namespace handsome
 {
-    class OnnxLoader
+    class MlpLoader
     {
     public:
-        OnnxLoader()=default;
+        MlpLoader()=default;
         void load_model(std::string file_path);
 
     public:

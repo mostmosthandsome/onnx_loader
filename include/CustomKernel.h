@@ -1,6 +1,6 @@
 #include <memory>
 #include <string>
-#include "OnnxLoader.h"
+#include "MlpLoader.h"
 namespace handsome
 {
     class CustomKernel
@@ -26,9 +26,11 @@ namespace handsome
 
     public:
         class CustomKernelPrivate;
+        class MlpDataMemory;
 
     private:
         std::unique_ptr<CustomKernelPrivate> data_ptr;
-        std::shared_ptr<OnnxLoader> model_ptr;
+        std::shared_ptr<MlpLoader> model_ptr;
+        std::shared_ptr<MlpDataMemory> actor_ptr;
     };
 }

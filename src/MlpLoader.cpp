@@ -1,11 +1,11 @@
-#include "OnnxLoader.h"
+#include "MlpLoader.h"
 #include "onnx.pb.h"
 #include <fstream>
 #include <iostream>
 
 using namespace handsome;
 
-void OnnxLoader::load_model(std::string filename)
+void MlpLoader::load_model(std::string filename)
 {
     std::ifstream fin(filename, std::ios::in | std::ios::binary);
     if (!fin) {
