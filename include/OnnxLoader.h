@@ -18,8 +18,7 @@ namespace handsome
     class OnnxLoader
     {
     public:
-        OnnxLoader()=default;
-        void load_model(std::string file_path);
+        OnnxLoader(std::string file_path);
         void load_mlp_param(std::shared_ptr<MlpParam> mlp_param,std::string mlp_name);
 
     private:

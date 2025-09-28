@@ -4,7 +4,7 @@
 
 using namespace handsome;
 
-void OnnxLoader::load_model(std::string filename)
+OnnxLoader::OnnxLoader(std::string filename)
 {
     std::ifstream fin(filename, std::ios::in | std::ios::binary);
     if (!fin) {
