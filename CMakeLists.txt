@@ -11,7 +11,7 @@ set(Custom_KERNEL_FILES
     src/main.cpp
     src/onnx.pb.cc
     src/CustomKernel.cpp
-    src/onnxLoader.cpp
+    src/OnnxLoader.cpp
 )
 
 # 包含路径
