@@ -230,7 +230,7 @@ void CustomKernel::CustomKernelPrivate::load_mlp_params(std::shared_ptr<MlpDataM
     for (size_t i = 0; i < num_layers; i++) {
         int out_dim = mlp_param_data->rows[i];
         int in_dim  = mlp_param_data->cols[i];
-        mlp_ptr->rows =  mlp_param_data->rows[i],mlp_ptr->cols[i] = mlp_param_data->cols[i];
+        mlp_ptr->rows[i] =  mlp_param_data->rows[i],mlp_ptr->cols[i] = mlp_param_data->cols[i];
         // 展平权重矩阵
         std::vector<float> flat_weight;
         flat_weight.reserve(out_dim * in_dim);
