@@ -223,7 +223,7 @@ void CustomKernel::CustomKernelPrivate::load_mlp_params(std::shared_ptr<MlpDataM
     model_ptr->load_mlp_param(mlp_param_data,mlp_name);
     int num_layers = mlp_param_data->num_layers;
     mlp_ptr->num_layers = num_layers;
-    mlp_ptr->weight_buff.resize(num_layers), mlp_ptr->bias_buff.resize(num_layers),mlp_ptr->rows.resize(num_layers),mlp_ptr->colss.resize(num_layers);
+    mlp_ptr->weight_buff.resize(num_layers), mlp_ptr->bias_buff.resize(num_layers),mlp_ptr->rows.resize(num_layers),mlp_ptr->cols.resize(num_layers);
     mlp_ptr->input_dim = mlp_param_data->cols[0], mlp_ptr->output_dim = mlp_param_data->rows[num_layers - 1];
 
     //创建cl_mem
