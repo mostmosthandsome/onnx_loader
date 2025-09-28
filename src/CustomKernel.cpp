@@ -177,7 +177,7 @@ void CustomKernel::load_openCL_code(std::string file_name)
 void CustomKernel::load_onnx_model(std::string file_name)
 {
     //create model
-    data_ptr->model_ptr = std::make_shared<OnnxLoader>(),data_ptr->model_ptr->load_model(file_name);
+    data_ptr->model_ptr = std::make_shared<OnnxLoader>(file_name);
     data_ptr->net_ptr = std::make_shared<MlpDataMemory>();
     data_ptr->load_mlp_params(data_ptr->net_ptr,"net");//测试网络中的名字叫做net
     data_ptr->input_dim =  data_ptr->net_ptr->input_dim,data_ptr->output_dim =  data_ptr->net_ptr->output_dim;
