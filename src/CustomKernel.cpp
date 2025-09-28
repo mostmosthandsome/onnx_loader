@@ -26,9 +26,8 @@ public:
 
 MlpDataMemory::~MlpDataMemory()
 {
-    cl_int err;
-    for(int i = 0; i < num_layers; ++i)  err = clReleaseMemObject(weight_buff[i]);
-    for(int i = 0; i < num_layers; ++i)  err = clReleaseMemObject(bias_buff[i]);
+    for(int i = 0; i < num_layers; ++i)  clReleaseMemObject(weight_buff[i]);
+    for(int i = 0; i < num_layers; ++i)  clReleaseMemObject(bias_buff[i]);
 }
 
 class CustomKernel::CustomKernelPrivate
@@ -191,7 +190,7 @@ void CustomKernel::inference(float input[],float output[])
     data_ptr->input_buff = clCreateBuffer(
         data_ptr->context,
         CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
-        sizeof(float) * actor_ptr->input_dim,
+        sizeof(float) * data_ptr->input_dim,
         input,
         &data_ptr->err
     );
@@ -296,7 +295,7 @@ void CustomKernel::CustomKernelPrivate::InferenceMlp(cl_mem input_buff,std::shar
 
         clSetKernelArg(elu_kernel, 0, sizeof(cl_mem), &output_buff2);
         clSetKernelArg(elu_kernel, 1, sizeof(cl_mem), &output_buff1);
-        clSetKernelArg(elu_kernel, 2, sizeof(int), &model_ptr->rows[i]);
+        clSetKernelArg(elu_kernel, 2, sizeof(int), &mlp_data_ptr->rows[i]);
         data_ptr->err = clEnqueueNDRangeKernel(queue, elu_kernel, 1, NULL,
                                     &global_size, NULL, 0, NULL, 
             &kernel_event);
