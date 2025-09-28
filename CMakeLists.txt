@@ -11,7 +11,7 @@ set(Custom_KERNEL_FILES
     src/main.cpp
     src/onnx.pb.cc
     src/CustomKernel.cpp
-    src/MlpxLoader.cpp
+    src/MlpLoader.cpp
 )
 
 # 包含路径
