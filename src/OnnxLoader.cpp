@@ -6,7 +6,6 @@ using namespace handsome;
 
 OnnxLoader::OnnxLoader(std::string filename)
 {
-    std::cout << "Loading model from: " << filename << std::endl;
     std::ifstream fin(filename, std::ios::in | std::ios::binary);
     if (!fin) {
         std::cerr << "Failed to open model file" << std::endl;
