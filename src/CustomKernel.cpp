@@ -18,9 +18,9 @@ class MlpDataMemory
 {
 public:
     ~MlpDataMemory();
-    std::vector<cl_mem> weight_buff,bias_buff;
     int num_layers;
-    std::vector<int> rows;
+    std::vector<cl_mem> weight_buff,bias_buff;
+    std::vector<int> rows,cols;
     int input_dim,output_dim;
 };
 
@@ -221,16 +221,16 @@ void CustomKernel::CustomKernelPrivate::load_mlp_params(std::shared_ptr<MlpDataM
     //先从创建好的模型中读取mlp数据
     std::shared_ptr<MlpParam> mlp_param_data;
     model_ptr->load_mlp_param(mlp_param_data,mlp_name);
-
     int num_layers = mlp_param_data->num_layers;
-    mlp_ptr->weight_buff.resize(num_layers), mlp_ptr->bias_buff.resize(num_layers);
+    mlp_ptr->num_layers = num_layers;
+    mlp_ptr->weight_buff.resize(num_layers), mlp_ptr->bias_buff.resize(num_layers),mlp_ptr->rows.resize(num_layers),mlp_ptr->colss.resize(num_layers);
     mlp_ptr->input_dim = mlp_param_data->cols[0], mlp_ptr->output_dim = mlp_param_data->rows[num_layers - 1];
 
     //创建cl_mem
     for (size_t i = 0; i < num_layers; i++) {
         int out_dim = mlp_param_data->rows[i];
         int in_dim  = mlp_param_data->cols[i];
-
+        mlp_ptr->rows =  mlp_param_data->rows[i],mlp_cols->cols[i] = mlp_param_data->cols[i];
         // 展平权重矩阵
         std::vector<float> flat_weight;
         flat_weight.reserve(out_dim * in_dim);
