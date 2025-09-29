@@ -16,3 +16,11 @@ use the following instructions
 cmake -B build
 cmake --build build
 ```
+
+# How to customize your own network Kernel
+
+使用方法可以查看main.cpp, 很简单
+将你的模型路径放进load_onnx_model的参数里即可
+main分支里，请确保你的网络是一个mlp，然后查看它的名字（也可以通过test文件夹下的model_check查看）
+
+将CustomKernel.cpp第183行的网络名字修改为你的mlp名字，重新编译即可
