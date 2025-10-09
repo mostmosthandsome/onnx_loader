@@ -22,7 +22,7 @@ namespace handsome
          * @brief inference the model 
          * @param input the input vector, whose dimension should be 265
         */
-        void inference(float input[],float output[]);
+        void inference(float input1[], float input2[],float output[]);
 
     public:
         class CustomKernelPrivate;

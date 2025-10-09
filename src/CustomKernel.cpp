@@ -42,13 +42,14 @@ public:
     cl_uint ret_num_devices;
     cl_uint ret_num_platforms;
     cl_int err;
-    cl_mem input_buff,output_buff1,output_buff2;
-    int input_dim,output_dim;
+    cl_mem input1_buff,input2_buff,elu_output_buff,gemm_output_buff;
+    int input1_dim,input2_dim,output_dim;
 
     //model
     std::shared_ptr<OnnxLoader> model_ptr;
-    std::shared_ptr<MlpDataMemory> net_ptr;
-    
+    //mlp_param
+    std::shared_ptr<MlpDataMemory> encoder_ptr,body_vel_ptr,fc_mu_ptr,actor_ptr;
+    cl_mem encoder_out_buff,body_vel_out_buff,fc_mu_out_buff;
     //for mlp load and inference
     /**
      * @brief load the mlp_name weights and params to mlp_ptr from model_ptr
@@ -56,10 +57,12 @@ public:
     void load_mlp_params(std::shared_ptr<MlpDataMemory> mlp_ptr,std::string mlp_name);
 
     /**
-     * @brief do a inference of mlp_data_ptr, output will be put in output_buff2
+     * @brief do a inference of mlp_data_ptr, output will be put in gemm_output_buff
+     # TODO 加入自动识别功能，自动识别最后一层是不是elu
     */
     void InferenceMlp(cl_mem input_buff,std::shared_ptr<MlpDataMemory> mlp_data_ptr);
 
+    void copy_cl_mem(cl_mem src_mem,cl_mem dest_mem, int copy_size);
 };
 
 CustomKernel::CustomKernel():data_ptr(std::make_unique<CustomKernelPrivate>())
@@ -74,14 +77,14 @@ CustomKernel::CustomKernel():data_ptr(std::make_unique<CustomKernelPrivate>())
     /* 创建命令队列 */
     data_ptr->queue = clCreateCommandQueue(data_ptr->context, data_ptr->device, 0, &data_ptr->err);
 
-    data_ptr->output_buff1 = clCreateBuffer(
+    data_ptr->elu_output_buff = clCreateBuffer(
         data_ptr->context,
         CL_MEM_READ_WRITE,
         sizeof(float) * 512,
         NULL,
         &data_ptr->err
     );
-    data_ptr->output_buff2 = clCreateBuffer(
+    data_ptr->gemm_output_buff = clCreateBuffer(
         data_ptr->context,
         CL_MEM_READ_WRITE,
         sizeof(float) * 512,
@@ -104,8 +107,8 @@ CustomKernel::~CustomKernel()
   data_ptr->err = clReleaseContext(data_ptr->context);
 
 
-  data_ptr->err = clReleaseMemObject(data_ptr->input_buff);
-  data_ptr->err = clReleaseMemObject(data_ptr->output_buff1),data_ptr->err = clReleaseMemObject(data_ptr->output_buff2);
+  data_ptr->err = clReleaseMemObject(data_ptr->input1_buff),data_ptr->err = clReleaseMemObject(data_ptr->input2_buff);
+  data_ptr->err = clReleaseMemObject(data_ptr->elu_output_buff),data_ptr->err = clReleaseMemObject(data_ptr->gemm_output_buff);
 }
 
 void CustomKernel::load_openCL_code(std::string file_name)
@@ -178,32 +181,66 @@ void CustomKernel::load_onnx_model(std::string file_name)
 {
     //create model
     data_ptr->model_ptr = std::make_shared<OnnxLoader>(file_name);
-    //load the params of mlp "net" 
-    data_ptr->net_ptr = std::make_shared<MlpDataMemory>();
-    data_ptr->load_mlp_params(data_ptr->net_ptr,"net");//测试网络中的名字叫做net
-    data_ptr->input_dim =  data_ptr->net_ptr->input_dim,data_ptr->output_dim =  data_ptr->net_ptr->output_dim;
+    //load the params of mlp 
+    data_ptr->load_mlp_params(data_ptr->actor_ptr,"actor");
+    data_ptr->load_mlp_params(data_ptr->encoder_ptr,"encoder");
+    data_ptr->load_mlp_params(data_ptr->body_vel_ptr,"body_vel");
+    data_ptr->load_mlp_params(data_ptr->fc_mu_ptr,"fc_mu");
+    
+    //create intermediate temp buff
+    data_ptr->encoder_out_buff = clCreateBuffer(data_ptr->context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
+        sizeof(float) * data_ptr->encoder_ptr->output_dim,
+        NULL, &data_ptr->err
+    );
+    data_ptr->body_vel_out_buff = clCreateBuffer(data_ptr->context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
+        sizeof(float) * data_ptr->body_vel_ptr->output_dim,
+        NULL, &data_ptr->err
+    );
+    data_ptr->fc_mu_out_buff = clCreateBuffer(data_ptr->context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
+        sizeof(float) * data_ptr->fc_mu_ptr->output_dim,
+        NULL, &data_ptr->err
+    );
+
+    data_ptr->input1_dim = 54;//考虑到写起来太麻烦了，这里直接用数字写死
+    data_ptr->input2_dim = data_ptr->encoder_ptr->input_dim;
+    data_ptr->output_dim =  data_ptr->actor_ptr->output_dim;
     
 }
 
 
-void CustomKernel::inference(float input[],float output[])
+void CustomKernel::inference(float input1[], float input2[], float input2[], float output[])
 {
     // 创建输入的向量 buffer，并拷贝数据
-    data_ptr->input_buff = clCreateBuffer(
+    data_ptr->input1_buff = clCreateBuffer(
         data_ptr->context,
         CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
-        sizeof(float) * data_ptr->input_dim,
-        input,
+        sizeof(float) * data_ptr->input1_dim,
+        input1,
         &data_ptr->err
     );
     if (data_ptr->err < 0) { perror("Couldn't create vec buffer"); exit(1); }
 
-    data_ptr->InferenceMlp(data_ptr->input_buff,data_ptr->net_ptr);
+    data_ptr->input2_buff =  clCreateBuffer(
+        data_ptr->context,
+        CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
+        sizeof(float) * data_ptr->input2_dim,
+        input1,
+        &data_ptr->err
+    );
+    if (data_ptr->err < 0) { perror("Couldn't create vec buffer"); exit(1); }
+
+
+    data_ptr->InferenceMlp(data_ptr->input2_buff,data_ptr->encoder_ptr);
+
+    data_ptr->InferenceMlp(data_ptr->actor_out_buff,data_ptr->body_vel_ptr);
+    body_vel_estimate = data_ptr->gemm_output_buff;
+    data_ptr->InferenceMlp(data_ptr->actor_out_buff,data->ptr->fc_mu);
+    body_vel_pt
 
     // 6. 读回结果
     data_ptr->err = clEnqueueReadBuffer(
       data_ptr->queue,
-      data_ptr->output_buff2,
+      data_ptr->gemm_output_buff,
       CL_TRUE,
       0,
       sizeof(float) * data_ptr->output_dim,
@@ -281,9 +318,9 @@ void CustomKernel::CustomKernelPrivate::InferenceMlp(cl_mem input_buff,std::shar
         //设置 kernel 参数
         clSetKernelArg(mat_kernel, 0, sizeof(cl_mem), &mlp_data_ptr->weight_buff[i]);
         if(i == 0)  clSetKernelArg(mat_kernel, 1, sizeof(cl_mem), &input_buff);
-        else        clSetKernelArg(mat_kernel, 1, sizeof(cl_mem), &output_buff1);
+        else        clSetKernelArg(mat_kernel, 1, sizeof(cl_mem), &elu_output_buff);
         clSetKernelArg(mat_kernel, 2, sizeof(cl_mem), &mlp_data_ptr->bias_buff[i]);
-        clSetKernelArg(mat_kernel, 3, sizeof(cl_mem), &output_buff2);
+        clSetKernelArg(mat_kernel, 3, sizeof(cl_mem), &gemm_output_buff);
         clSetKernelArg(mat_kernel, 4, sizeof(int), &mlp_data_ptr->rows[i]);
         clSetKernelArg(mat_kernel, 5, sizeof(int), &mlp_data_ptr->cols[i]);
         err = clEnqueueNDRangeKernel(queue, mat_kernel, 1, NULL,
@@ -295,8 +332,8 @@ void CustomKernel::CustomKernelPrivate::InferenceMlp(cl_mem input_buff,std::shar
 
         if(i == mlp_data_ptr->num_layers - 1) break;
 
-        clSetKernelArg(elu_kernel, 0, sizeof(cl_mem), &output_buff2);
-        clSetKernelArg(elu_kernel, 1, sizeof(cl_mem), &output_buff1);
+        clSetKernelArg(elu_kernel, 0, sizeof(cl_mem), &gemm_output_buff);
+        clSetKernelArg(elu_kernel, 1, sizeof(cl_mem), &elu_output_buff);
         clSetKernelArg(elu_kernel, 2, sizeof(int), &mlp_data_ptr->rows[i]);
         err = clEnqueueNDRangeKernel(queue, elu_kernel, 1, NULL,
                                     &global_size, NULL, 0, NULL, 
@@ -308,4 +345,23 @@ void CustomKernel::CustomKernelPrivate::InferenceMlp(cl_mem input_buff,std::shar
 
       
     }
+}
+
+void CustomKernel::CustomKernelPrivate::copy_cl_mem(cl_mem src_mem, cl_mem dest_mem, int copy_size)
+{
+    // 从 gemm_output_buff 拷贝前 output_dim 部分到 encoder_out_buff
+    err = clEnqueueCopyBuffer(
+        queue,                 // 命令队列
+        src_mem,      // 源缓冲区
+        dest_mem,                // 目标缓冲区
+        0,                               // 源偏移
+        0,                               // 目标偏移
+        copy_size,                       // 拷贝大小（字节）
+        0, nullptr, nullptr              // 同步选项
+    );
+
+    if (err != CL_SUCCESS) printf("Failed to copy buffer: %d\n", data_ptr->err);
+
+    // 可选：等待执行完
+    clFinish(queue);
 }
