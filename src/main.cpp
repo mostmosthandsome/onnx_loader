@@ -6,18 +6,19 @@
 using namespace std;
 int main()
 {
-  float input[265],output[12];
-  for(int i = 0; i < 265; ++i)  input[i] = 0.1;
+  float input1[54],input2[270],output[12];
+  for(int i = 0; i < 54; ++i)  input1[i] = 0.1;
+  for(int i = 0; i < 270; ++i)  input2[i] = 0.2;
   handsome::CustomKernel test_kernel;
   test_kernel.load_openCL_code("src/mat_op.cl");
-  test_kernel.load_onnx_model("config/actor.onnx");
+  test_kernel.load_onnx_model("config/explore_vae.onnx");
 
 
   clock_t start, end;
   double cpu_time_used;
   start = clock();   // ==== 开始计时 ====
   {
-    test_kernel.inference(input,output);
+    test_kernel.inference(input1, input2, output);
   }
   end = clock();   // ==== 结束计时 ====
     

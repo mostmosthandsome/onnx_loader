@@ -196,26 +196,33 @@ void CustomKernel::load_onnx_model(std::string file_name)
 {
     //create model
     data_ptr->model_ptr = std::make_shared<OnnxLoader>(file_name);
+    data_ptr->encoder_ptr  = std::make_shared<MlpDataMemory>();
+    data_ptr->body_vel_ptr = std::make_shared<MlpDataMemory>();
+    data_ptr->fc_mu_ptr    = std::make_shared<MlpDataMemory>();
+    data_ptr->actor_ptr    = std::make_shared<MlpDataMemory>();
+
+    
     //load the params of mlp 
     data_ptr->load_mlp_params(data_ptr->actor_ptr,"actor");
     data_ptr->load_mlp_params(data_ptr->encoder_ptr,"encoder");
-    data_ptr->load_mlp_params(data_ptr->body_vel_ptr,"body_vel");
+    data_ptr->load_mlp_params(data_ptr->body_vel_ptr,"est_explicit_layers.body_vel_buf");
     data_ptr->load_mlp_params(data_ptr->fc_mu_ptr,"fc_mu");
-    
+    std::cout << "load params finished\n";
     //create intermediate temp buff
-    data_ptr->encoder_out_buff = clCreateBuffer(data_ptr->context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
+    std::cout << "encoder out buff size = " << data_ptr->encoder_ptr->output_dim << std::endl;
+    data_ptr->encoder_out_buff = clCreateBuffer(data_ptr->context, CL_MEM_READ_WRITE,
         sizeof(float) * data_ptr->encoder_ptr->output_dim,
         NULL, &data_ptr->err
     );
-    data_ptr->body_vel_out_buff = clCreateBuffer(data_ptr->context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
+    data_ptr->body_vel_out_buff = clCreateBuffer(data_ptr->context, CL_MEM_READ_WRITE,
         sizeof(float) * data_ptr->body_vel_ptr->output_dim,
         NULL, &data_ptr->err
     );
-    data_ptr->fc_mu_out_buff = clCreateBuffer(data_ptr->context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
+    data_ptr->fc_mu_out_buff = clCreateBuffer(data_ptr->context, CL_MEM_READ_WRITE,
         sizeof(float) * data_ptr->fc_mu_ptr->output_dim,
         NULL, &data_ptr->err
     );
-    data_ptr->actor_in_buff = clCreateBuffer(data_ptr->context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
+    data_ptr->actor_in_buff = clCreateBuffer(data_ptr->context, CL_MEM_READ_WRITE,
         sizeof(float) * data_ptr->actor_ptr->input_dim,
         NULL, &data_ptr->err
     );
@@ -227,7 +234,7 @@ void CustomKernel::load_onnx_model(std::string file_name)
 }
 
 
-void CustomKernel::inference(float input1[], float input2[], float input2[], float output[])
+void CustomKernel::inference(float input1[], float input2[], float output[])
 {
     // 创建输入的向量 buffer，并拷贝数据
     data_ptr->input1_buff = clCreateBuffer(
@@ -248,15 +255,14 @@ void CustomKernel::inference(float input1[], float input2[], float input2[], flo
     );
     if (data_ptr->err < 0) { perror("Couldn't create vec buffer"); exit(1); }
 
-
     data_ptr->InferenceMlp(data_ptr->input2_buff,data_ptr->encoder_ptr);
-    data_ptr->copy_cl_mem(data_ptr->gemm_output_buff,data_ptr->encoder_out_buff);
-
+    data_ptr->copy_cl_mem(data_ptr->gemm_output_buff,data_ptr->encoder_out_buff, data_ptr->encoder_ptr->output_dim);
+;
     data_ptr->InferenceMlp(data_ptr->encoder_out_buff,data_ptr->body_vel_ptr);
-    data_ptr->clip(data_ptr->gemm_output_buff,data_ptr->body_vel_out_buff);
+    data_ptr->clip(data_ptr->gemm_output_buff,data_ptr->body_vel_out_buff, data_ptr->body_vel_ptr->output_dim);
 
-    data_ptr->InferenceMlp(data_ptr->encoder_out_buff,data->ptr->fc_mu);
-    data_ptr->copy_cl_mem(data_ptr->gemm_output_buff,data_ptr->fc_mu_out_buff);
+    data_ptr->InferenceMlp(data_ptr->encoder_out_buff,data_ptr->fc_mu_ptr);
+    data_ptr->copy_cl_mem(data_ptr->gemm_output_buff,data_ptr->fc_mu_out_buff, data_ptr->fc_mu_ptr->output_dim);
 
     data_ptr->concat(data_ptr->input1_buff, data_ptr->input1_dim, data_ptr->body_vel_out_buff, data_ptr->body_vel_ptr->output_dim, data_ptr->fc_mu_out_buff, data_ptr->fc_mu_ptr->output_dim, data_ptr->actor_in_buff);
     data_ptr->InferenceMlp(data_ptr->actor_in_buff,data_ptr->actor_ptr);
@@ -281,6 +287,7 @@ void CustomKernel::inference(float input1[], float input2[], float input2[], flo
 
 void CustomKernel::CustomKernelPrivate::load_mlp_params(std::shared_ptr<MlpDataMemory> mlp_ptr,std::string mlp_name)
 {
+    
     //先从创建好的模型中读取mlp数据
     std::shared_ptr<MlpParam> mlp_param_data = std::make_shared<MlpParam>();
     model_ptr->load_mlp_param(mlp_param_data,mlp_name);
@@ -380,11 +387,11 @@ void CustomKernel::CustomKernelPrivate::copy_cl_mem(cl_mem src_mem, cl_mem dest_
         dest_mem,                // 目标缓冲区
         0,                               // 源偏移
         0,                               // 目标偏移
-        copy_size,                       // 拷贝大小（字节）
+        sizeof(float) * copy_size,                       // 拷贝大小（字节）
         0, nullptr, nullptr              // 同步选项
     );
 
-    if (err != CL_SUCCESS) printf("Failed to copy buffer: %d\n", data_ptr->err);
+    if (err != CL_SUCCESS) printf("Failed to copy buffer: %d\n", err);
 
     // 可选：等待执行完
     clFinish(queue);
@@ -392,7 +399,7 @@ void CustomKernel::CustomKernelPrivate::copy_cl_mem(cl_mem src_mem, cl_mem dest_
 
 void CustomKernel::CustomKernelPrivate::clip(cl_mem src_mem, cl_mem dst_mem, int clip_size)
 {
-    size_t global_size;
+    size_t global_size = clip_size;
     cl_event kernel_event;
     clSetKernelArg(clip_kernel, 0, sizeof(cl_mem), &src_mem);
     clSetKernelArg(clip_kernel, 1, sizeof(cl_mem), &dst_mem);
@@ -406,42 +413,56 @@ void CustomKernel::CustomKernelPrivate::clip(cl_mem src_mem, cl_mem dst_mem, int
     clWaitForEvents(1, &kernel_event);
 }
 
-void CustomKernel::CustomKernelPrivate::concat(cl_mem src1, int size1, cl_mem src2, int size2, cl_mem src3, int size3, cl_mem dst)
+void CustomKernel::CustomKernelPrivate::concat(
+    cl_mem src1, int size1,
+    cl_mem src2, int size2,
+    cl_mem src3, int size3,
+    cl_mem dst)
 {
     cl_int err;
     size_t offset = 0;
 
-    // 每个元素的字节大小（假设 float）
-    size_t elem_size = sizeof(float);
+    // 元素字节大小（假设 float）
+    const size_t elem_size = sizeof(float);
 
-    // 计算每个 buffer 的字节大小
-    size_t bytes1 = size1 * elem_size;
-    size_t bytes2 = size2 * elem_size;
-    size_t bytes3 = size3 * elem_size;
-
-    // 第1段：src1 → dst[offset : offset + bytes1)
-    err = clEnqueueCopyBuffer(queue, src1, dst,
-                              0, offset, bytes1,
-                              0, NULL, NULL);
+    // ---- 第1段 ----
+    err = clEnqueueCopyBuffer(
+        queue,
+        src1,
+        dst,
+        0,
+        offset,
+        elem_size * size1,    // ✅ 拷贝字节数
+        0, nullptr, nullptr);
     if (err != CL_SUCCESS)
         fprintf(stderr, "[concat] Copy src1 failed, err=%d\n", err);
-    offset += bytes1;
+    offset += elem_size * size1;
 
-    // 第2段：src2 → dst[offset : offset + bytes2)
-    err = clEnqueueCopyBuffer(queue, src2, dst,
-                              0, offset, bytes2,
-                              0, NULL, NULL);
+    // ---- 第2段 ----
+    err = clEnqueueCopyBuffer(
+        queue,
+        src2,
+        dst,
+        0,
+        offset,
+        elem_size * size2,    // ✅ 拷贝字节数
+        0, nullptr, nullptr);
     if (err != CL_SUCCESS)
         fprintf(stderr, "[concat] Copy src2 failed, err=%d\n", err);
-    offset += bytes2;
+    offset += elem_size * size2;
 
-    // 第3段：src3 → dst[offset : offset + bytes3)
-    err = clEnqueueCopyBuffer(queue, src3, dst,
-                              0, offset, bytes3,
-                              0, NULL, NULL);
+    // ---- 第3段 ----
+    err = clEnqueueCopyBuffer(
+        queue,
+        src3,
+        dst,
+        0,
+        offset,
+        elem_size * size3,    // ✅ 拷贝字节数
+        0, nullptr, nullptr);
     if (err != CL_SUCCESS)
         fprintf(stderr, "[concat] Copy src3 failed, err=%d\n", err);
 
-    // 等待全部完成
+    // 等待执行完毕
     clFinish(queue);
 }

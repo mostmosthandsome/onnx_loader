@@ -24,6 +24,7 @@ OnnxLoader::OnnxLoader(std::string filename)
 
 void OnnxLoader::load_mlp_param(std::shared_ptr<MlpParam> mlp_param,std::string mlp_name)
 {
+    std::cout << "loading mlp " << mlp_name << std::endl;
         // 遍历 initializer（权重参数）
     for (const auto& tensor : graph_ptr->initializer()) {
         const std::string& name = tensor.name();
@@ -32,7 +33,6 @@ void OnnxLoader::load_mlp_param(std::shared_ptr<MlpParam> mlp_param,std::string 
         size_t num_elem  = raw.size() / sizeof(float);
         
         if (name.find(mlp_name + ".") != 0)   continue; // 必须以 mlp_name 开头
-
         // 判断是 weight 还是 bias
         bool is_weight = (name.find("weight") != std::string::npos);
         bool is_bias   = (name.find("bias")   != std::string::npos);
@@ -41,11 +41,22 @@ void OnnxLoader::load_mlp_param(std::shared_ptr<MlpParam> mlp_param,std::string 
 
         int layer_id = -1;
         {
-            auto pos1 = name.find('.');
-            auto pos2 = name.find('.', pos1 + 1);
-            if (pos1 != std::string::npos && pos2 != std::string::npos) {
-                layer_id = std::stoi(name.substr(pos1 + 1, pos2 - pos1 - 1)) / 2;
+            // 去掉 MLP 名称前缀
+            std::string sub = name.substr(mlp_name.size() + 1); // 去掉 "mlp_name."
+            // sub 例如：
+            // "0.weight" or "2.bias" or "weight"
+
+            size_t dot_pos = sub.find('.');
+
+            if (dot_pos != std::string::npos && std::isdigit(sub[0])) {
+                // 多层情况，例如 "0.weight"
+                int raw_id = std::stoi(sub.substr(0, dot_pos));
+                layer_id = raw_id / 2;
+            } else {
+                // 单层 MLP 特判，例如 "weight" / "bias"
+                layer_id = 0;
             }
+
         }
 
         if (layer_id < 0) {
