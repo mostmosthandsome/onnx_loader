@@ -25,3 +25,13 @@ __kernel void elu_kernel(__global const float* input, __global float* output, co
         else    output[idx] = exp(x) - 1.0f;
     }
 }
+
+__kernel void clip_kernel(__global const float* input, __global float* output, const int N) {
+    int idx = get_global_id(0);
+    if (idx < N) {
+        float x = input[idx];
+        if(input[idx] > 10.0f)  output[idx] = 10.0f;
+        else if(input[idx] < -10.0f)   output[idx] = -10.0f;
+        else    output[idx] = x;
+    }
+}

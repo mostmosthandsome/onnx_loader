@@ -38,7 +38,7 @@ public:
     cl_context context{NULL};
     cl_command_queue queue{NULL};
     cl_program program{NULL};
-    cl_kernel mat_kernel{NULL},elu_kernel{NULL};
+    cl_kernel mat_kernel{NULL},elu_kernel{NULL},clip_kernel{NULL};
     cl_uint ret_num_devices;
     cl_uint ret_num_platforms;
     cl_int err;
@@ -49,7 +49,7 @@ public:
     std::shared_ptr<OnnxLoader> model_ptr;
     //mlp_param
     std::shared_ptr<MlpDataMemory> encoder_ptr,body_vel_ptr,fc_mu_ptr,actor_ptr;
-    cl_mem encoder_out_buff,body_vel_out_buff,fc_mu_out_buff;
+    cl_mem encoder_out_buff,body_vel_out_buff,fc_mu_out_buff,actor_in_buff;
     //for mlp load and inference
     /**
      * @brief load the mlp_name weights and params to mlp_ptr from model_ptr
@@ -62,7 +62,11 @@ public:
     */
     void InferenceMlp(cl_mem input_buff,std::shared_ptr<MlpDataMemory> mlp_data_ptr);
 
-    void copy_cl_mem(cl_mem src_mem,cl_mem dest_mem, int copy_size);
+    void copy_cl_mem(cl_mem src_mem,cl_mem dst_mem, int copy_size);
+
+    void clip(cl_mem src_mem,cl_mem dst_mem, int clip_size);
+
+    void concat(cl_mem src1, int size1, cl_mem src2, int size2, cl_mem src3, int size3, cl_mem dst);
 };
 
 CustomKernel::CustomKernel():data_ptr(std::make_unique<CustomKernelPrivate>())
@@ -98,17 +102,21 @@ CustomKernel::CustomKernel():data_ptr(std::make_unique<CustomKernelPrivate>())
 CustomKernel::~CustomKernel()
 {
       /* 終了処理 */
-  data_ptr->err = clFlush(data_ptr->queue);
-  data_ptr->err = clFinish(data_ptr->queue);
-  data_ptr->err = clReleaseKernel(data_ptr->mat_kernel);
-  data_ptr->err = clReleaseProgram(data_ptr->program);
+    data_ptr->err = clFlush(data_ptr->queue);
+    data_ptr->err = clFinish(data_ptr->queue);
+    data_ptr->err = clReleaseKernel(data_ptr->mat_kernel);
+    data_ptr->err = clReleaseProgram(data_ptr->program);
 
-  data_ptr->err = clReleaseCommandQueue(data_ptr->queue);
-  data_ptr->err = clReleaseContext(data_ptr->context);
+    data_ptr->err = clReleaseCommandQueue(data_ptr->queue);
+    data_ptr->err = clReleaseContext(data_ptr->context);
 
 
-  data_ptr->err = clReleaseMemObject(data_ptr->input1_buff),data_ptr->err = clReleaseMemObject(data_ptr->input2_buff);
-  data_ptr->err = clReleaseMemObject(data_ptr->elu_output_buff),data_ptr->err = clReleaseMemObject(data_ptr->gemm_output_buff);
+    data_ptr->err = clReleaseMemObject(data_ptr->input1_buff),data_ptr->err = clReleaseMemObject(data_ptr->input2_buff);
+    data_ptr->err = clReleaseMemObject(data_ptr->elu_output_buff),data_ptr->err = clReleaseMemObject(data_ptr->gemm_output_buff);
+    data_ptr->err = clReleaseMemObject(data_ptr->encoder_out_buff);
+    data_ptr->err = clReleaseMemObject(data_ptr->body_vel_out_buff);
+    data_ptr->err = clReleaseMemObject(data_ptr->fc_mu_out_buff);
+    data_ptr->err = clReleaseMemObject(data_ptr->actor_in_buff);
 }
 
 void CustomKernel::load_openCL_code(std::string file_name)
@@ -168,7 +176,14 @@ void CustomKernel::load_openCL_code(std::string file_name)
     data_ptr->elu_kernel = clCreateKernel(data_ptr->program, "elu_kernel", &data_ptr->err);
     
     if(data_ptr->err < 0) {
-        perror("Couldn't create the mat kernel");
+        perror("Couldn't create the elu kernel");
+        exit(1);   
+    }
+    
+    data_ptr->clip_kernel = clCreateKernel(data_ptr->program, "clip_kernel", &data_ptr->err);
+    
+    if(data_ptr->err < 0) {
+        perror("Couldn't create the clip kernel");
         exit(1);   
     }
 
@@ -198,6 +213,10 @@ void CustomKernel::load_onnx_model(std::string file_name)
     );
     data_ptr->fc_mu_out_buff = clCreateBuffer(data_ptr->context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
         sizeof(float) * data_ptr->fc_mu_ptr->output_dim,
+        NULL, &data_ptr->err
+    );
+    data_ptr->actor_in_buff = clCreateBuffer(data_ptr->context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
+        sizeof(float) * data_ptr->actor_ptr->input_dim,
         NULL, &data_ptr->err
     );
 
@@ -231,11 +250,16 @@ void CustomKernel::inference(float input1[], float input2[], float input2[], flo
 
 
     data_ptr->InferenceMlp(data_ptr->input2_buff,data_ptr->encoder_ptr);
+    data_ptr->copy_cl_mem(data_ptr->gemm_output_buff,data_ptr->encoder_out_buff);
 
-    data_ptr->InferenceMlp(data_ptr->actor_out_buff,data_ptr->body_vel_ptr);
-    body_vel_estimate = data_ptr->gemm_output_buff;
-    data_ptr->InferenceMlp(data_ptr->actor_out_buff,data->ptr->fc_mu);
-    body_vel_pt
+    data_ptr->InferenceMlp(data_ptr->encoder_out_buff,data_ptr->body_vel_ptr);
+    data_ptr->clip(data_ptr->gemm_output_buff,data_ptr->body_vel_out_buff);
+
+    data_ptr->InferenceMlp(data_ptr->encoder_out_buff,data->ptr->fc_mu);
+    data_ptr->copy_cl_mem(data_ptr->gemm_output_buff,data_ptr->fc_mu_out_buff);
+
+    data_ptr->concat(data_ptr->input1_buff, data_ptr->input1_dim, data_ptr->body_vel_out_buff, data_ptr->body_vel_ptr->output_dim, data_ptr->fc_mu_out_buff, data_ptr->fc_mu_ptr->output_dim, data_ptr->actor_in_buff);
+    data_ptr->InferenceMlp(data_ptr->actor_in_buff,data_ptr->actor_ptr);
 
     // 6. 读回结果
     data_ptr->err = clEnqueueReadBuffer(
@@ -363,5 +387,61 @@ void CustomKernel::CustomKernelPrivate::copy_cl_mem(cl_mem src_mem, cl_mem dest_
     if (err != CL_SUCCESS) printf("Failed to copy buffer: %d\n", data_ptr->err);
 
     // 可选：等待执行完
+    clFinish(queue);
+}
+
+void CustomKernel::CustomKernelPrivate::clip(cl_mem src_mem, cl_mem dst_mem, int clip_size)
+{
+    size_t global_size;
+    cl_event kernel_event;
+    clSetKernelArg(clip_kernel, 0, sizeof(cl_mem), &src_mem);
+    clSetKernelArg(clip_kernel, 1, sizeof(cl_mem), &dst_mem);
+    clSetKernelArg(clip_kernel, 2, sizeof(int), &clip_size);
+    err = clEnqueueNDRangeKernel(queue, clip_kernel, 1, NULL,
+                                &global_size, NULL, 0, NULL, 
+        &kernel_event);
+
+
+    // 等待 kernel 完成
+    clWaitForEvents(1, &kernel_event);
+}
+
+void CustomKernel::CustomKernelPrivate::concat(cl_mem src1, int size1, cl_mem src2, int size2, cl_mem src3, int size3, cl_mem dst)
+{
+    cl_int err;
+    size_t offset = 0;
+
+    // 每个元素的字节大小（假设 float）
+    size_t elem_size = sizeof(float);
+
+    // 计算每个 buffer 的字节大小
+    size_t bytes1 = size1 * elem_size;
+    size_t bytes2 = size2 * elem_size;
+    size_t bytes3 = size3 * elem_size;
+
+    // 第1段：src1 → dst[offset : offset + bytes1)
+    err = clEnqueueCopyBuffer(queue, src1, dst,
+                              0, offset, bytes1,
+                              0, NULL, NULL);
+    if (err != CL_SUCCESS)
+        fprintf(stderr, "[concat] Copy src1 failed, err=%d\n", err);
+    offset += bytes1;
+
+    // 第2段：src2 → dst[offset : offset + bytes2)
+    err = clEnqueueCopyBuffer(queue, src2, dst,
+                              0, offset, bytes2,
+                              0, NULL, NULL);
+    if (err != CL_SUCCESS)
+        fprintf(stderr, "[concat] Copy src2 failed, err=%d\n", err);
+    offset += bytes2;
+
+    // 第3段：src3 → dst[offset : offset + bytes3)
+    err = clEnqueueCopyBuffer(queue, src3, dst,
+                              0, offset, bytes3,
+                              0, NULL, NULL);
+    if (err != CL_SUCCESS)
+        fprintf(stderr, "[concat] Copy src3 failed, err=%d\n", err);
+
+    // 等待全部完成
     clFinish(queue);
 }
