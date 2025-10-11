@@ -54,12 +54,12 @@ public:
      * @brief load the mlp_name weights and params to mlp_ptr from model_ptr
     */
     void load_mlp_params(std::shared_ptr<MlpDataMemory> mlp_ptr,std::string mlp_name);
+    void load_mlp_params(std::shared_ptr<MlpDataMemory> mlp_ptr);
 
     /**
      * @brief do a inference of mlp_data_ptr, output will be put in output_buff2
     */
     void InferenceMlp(cl_mem input_buff,std::shared_ptr<MlpDataMemory> mlp_data_ptr);
-
 };
 
 CustomKernel::CustomKernel():data_ptr(std::make_unique<CustomKernelPrivate>())
@@ -180,7 +180,7 @@ void CustomKernel::load_onnx_model(std::string file_name)
     data_ptr->model_ptr = std::make_shared<OnnxLoader>(file_name);
     //load the params of mlp "net" 
     data_ptr->net_ptr = std::make_shared<MlpDataMemory>();
-    data_ptr->load_mlp_params(data_ptr->net_ptr,"net");//测试网络中的名字叫做net
+    data_ptr->load_mlp_params(data_ptr->net_ptr);//测试网络中的名字叫做net
     data_ptr->input_dim =  data_ptr->net_ptr->input_dim,data_ptr->output_dim =  data_ptr->net_ptr->output_dim;
     
 }
@@ -217,6 +217,57 @@ void CustomKernel::inference(float input[],float output[])
 
 ///////////////////////////////////////////////////////////////////
 
+void CustomKernel::CustomKernelPrivate::load_mlp_params(std::shared_ptr<MlpDataMemory> mlp_ptr)
+{
+    //先从创建好的模型中读取mlp数据
+    std::shared_ptr<MlpParam> mlp_param_data = std::make_shared<MlpParam>();
+    model_ptr->load_mlp_param(mlp_param_data);
+    int num_layers = mlp_param_data->num_layers;
+    mlp_ptr->num_layers = num_layers;
+    mlp_ptr->weight_buff.resize(num_layers), mlp_ptr->bias_buff.resize(num_layers),mlp_ptr->rows.resize(num_layers),mlp_ptr->cols.resize(num_layers);
+    mlp_ptr->input_dim = mlp_param_data->cols[0], mlp_ptr->output_dim = mlp_param_data->rows[num_layers - 1];
+
+    //创建cl_mem
+    for (int i = 0; i < num_layers; ++i) {
+        int out_dim = mlp_param_data->rows[i];
+        int in_dim  = mlp_param_data->cols[i];
+        mlp_ptr->rows[i] =  mlp_param_data->rows[i],mlp_ptr->cols[i] = mlp_param_data->cols[i];
+        // 展平权重矩阵
+        std::vector<float> flat_weight;
+        flat_weight.reserve(out_dim * in_dim);
+        for (int r = 0; r < out_dim; r++) {
+            flat_weight.insert(flat_weight.end(),
+                            mlp_param_data->weights[i][r].begin(),
+                            mlp_param_data->weights[i][r].end());
+        }
+
+        // 创建权重 buffer
+        mlp_ptr->weight_buff[i] = clCreateBuffer(
+            context,
+            CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
+            sizeof(float) * flat_weight.size(),
+            flat_weight.data(),
+            &err
+        );
+        if (err < 0) {
+            perror(("Couldn't create weight_buff[" + std::to_string(i) + "]").c_str());
+            exit(1);
+        }
+
+        // 创建 bias buffer
+         mlp_ptr->bias_buff[i] = clCreateBuffer(
+            context,
+            CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
+            sizeof(float) * mlp_param_data->biases[i].size(),
+            mlp_param_data->biases[i].data(),
+            &err
+        );
+        if (err < 0) {
+            perror(("Couldn't create bias_buff[" + std::to_string(i) + "]").c_str());
+            exit(1);
+        }   
+    }
+}
 
 void CustomKernel::CustomKernelPrivate::load_mlp_params(std::shared_ptr<MlpDataMemory> mlp_ptr,std::string mlp_name)
 {
