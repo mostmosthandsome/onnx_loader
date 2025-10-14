@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <time.h>
 #include <iostream>
+#include <iomanip>
 #include <vector>
 
 using namespace handsome;
@@ -209,7 +210,6 @@ void CustomKernel::load_onnx_model(std::string file_name)
     data_ptr->load_mlp_params(data_ptr->fc_mu_ptr,"fc_mu");
     std::cout << "load params finished\n";
     //create intermediate temp buff
-    std::cout << "encoder out buff size = " << data_ptr->encoder_ptr->output_dim << std::endl;
     data_ptr->encoder_out_buff = clCreateBuffer(data_ptr->context, CL_MEM_READ_WRITE,
         sizeof(float) * data_ptr->encoder_ptr->output_dim,
         NULL, &data_ptr->err
@@ -250,14 +250,14 @@ void CustomKernel::inference(float input1[], float input2[], float output[])
         data_ptr->context,
         CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
         sizeof(float) * data_ptr->input2_dim,
-        input1,
+        input2,
         &data_ptr->err
     );
     if (data_ptr->err < 0) { perror("Couldn't create vec buffer"); exit(1); }
 
     data_ptr->InferenceMlp(data_ptr->input2_buff,data_ptr->encoder_ptr);
     data_ptr->copy_cl_mem(data_ptr->gemm_output_buff,data_ptr->encoder_out_buff, data_ptr->encoder_ptr->output_dim);
-;
+    
     data_ptr->InferenceMlp(data_ptr->encoder_out_buff,data_ptr->body_vel_ptr);
     data_ptr->clip(data_ptr->gemm_output_buff,data_ptr->body_vel_out_buff, data_ptr->body_vel_ptr->output_dim);
 
@@ -303,18 +303,15 @@ void CustomKernel::CustomKernelPrivate::load_mlp_params(std::shared_ptr<MlpDataM
         mlp_ptr->rows[i] =  mlp_param_data->rows[i],mlp_ptr->cols[i] = mlp_param_data->cols[i];
         // 展平权重矩阵
         std::vector<float> flat_weight;
-        flat_weight.reserve(out_dim * in_dim);
-        for (int r = 0; r < out_dim; r++) {
-            flat_weight.insert(flat_weight.end(),
-                            mlp_param_data->weights[i][r].begin(),
-                            mlp_param_data->weights[i][r].end());
-        }
-
+        flat_weight.resize(out_dim * in_dim);
+        for(int j = 0; j < out_dim; ++j)
+            for(int k = 0; k < in_dim; ++k) 
+                flat_weight[j * in_dim + k] = mlp_param_data->weights[i][j][k];
         // 创建权重 buffer
         mlp_ptr->weight_buff[i] = clCreateBuffer(
             context,
             CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
-            sizeof(float) * flat_weight.size(),
+            sizeof(float) * out_dim * in_dim,
             flat_weight.data(),
             &err
         );
@@ -348,6 +345,7 @@ void CustomKernel::CustomKernelPrivate::InferenceMlp(cl_mem input_buff,std::shar
         global_size = mlp_data_ptr->rows[i];   // 每个 work-item 负责一行
         //设置 kernel 参数
         clSetKernelArg(mat_kernel, 0, sizeof(cl_mem), &mlp_data_ptr->weight_buff[i]);
+       
         if(i == 0)  clSetKernelArg(mat_kernel, 1, sizeof(cl_mem), &input_buff);
         else        clSetKernelArg(mat_kernel, 1, sizeof(cl_mem), &elu_output_buff);
         clSetKernelArg(mat_kernel, 2, sizeof(cl_mem), &mlp_data_ptr->bias_buff[i]);
@@ -360,7 +358,6 @@ void CustomKernel::CustomKernelPrivate::InferenceMlp(cl_mem input_buff,std::shar
             
         // 等待 kernel 完成
         clWaitForEvents(1, &kernel_event);
-
         if(i == mlp_data_ptr->num_layers - 1) break;
 
         clSetKernelArg(elu_kernel, 0, sizeof(cl_mem), &gemm_output_buff);

@@ -15,17 +15,20 @@ int main()
 
 
   clock_t start, end;
-  double cpu_time_used;
-  start = clock();   // ==== 开始计时 ====
+  double cpu_time_used = 0;
+  int test_case_num = 100;
+  for(int i = 0; i < test_case_num; ++i)
   {
+    start = clock();   // ==== 开始计时 ====
     test_kernel.inference(input1, input2, output);
+    end = clock();   // ==== 结束计时 ====
+    cpu_time_used += ((double) (end - start)) / CLOCKS_PER_SEC * 1000.0;
   }
-  end = clock();   // ==== 结束计时 ====
     
 
-  cpu_time_used = ((double) (end - start)) / CLOCKS_PER_SEC * 1000.0; // 毫秒
-  printf("Total execution time: %f ms\n", cpu_time_used);
-  for(int i = 0; i < 12; ++i)  std::cout << fixed << setprecision(7) << output[i] << ' ';
+  for(int i = 0; i < 12; ++i)  std::cout << fixed << setprecision(7) << output[i] << ',';
+  putchar(10);
+  printf("Total execution time: %f ms\n", cpu_time_used / test_case_num);
   putchar(10);
   return 0;
 
