@@ -3,7 +3,7 @@ PROJECT = onnx_load
 CXXFLAGS = -Wall -O3 -std=c++17 -mfloat-abi=hard -mfpu=neon -mtune=cortex-a9 -fpermissive
 
 # Protobuf 安装路径
-PROTOBUF_DIR = ../third_parties/install
+PROTOBUF_DIR = ../onnx_loader_third_parties/install
 
 INCLUDES = \
     -I../vip_driver/sdk/include \
@@ -25,7 +25,11 @@ BUILD_DIR = build
 CUSTOM_KERNEL_SRC = \
     $(SRC_DIR)/onnx.pb.cc \
     $(SRC_DIR)/CustomKernel.cpp \
-    $(SRC_DIR)/OnnxLoader.cpp
+    $(SRC_DIR)/OnnxLoader.cpp \
+    $(SRC_DIR)/ExploreVaeRunner.cpp \
+    $(SRC_DIR)/PolicyHtOriRunner.cpp
+
+
 
 CUSTOM_KERNEL_OBJ = $(patsubst $(SRC_DIR)/%.cpp,$(BUILD_DIR)/%.o,$(CUSTOM_KERNEL_SRC))
 CUSTOM_KERNEL_OBJ := $(patsubst $(SRC_DIR)/%.cc,$(BUILD_DIR)/%.o,$(CUSTOM_KERNEL_OBJ))
@@ -70,17 +74,17 @@ $(MODEL_CHECK_TARGET): $(MODEL_CHECK_OBJ)
 $(BUILD_DIR)/%.o: $(SRC_DIR)/%.cpp | $(BUILD_DIR)
 	@mkdir -p $(dir $@)
 	@echo "🧩 编译 $<"
-	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
+	@$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
 
 $(BUILD_DIR)/%.o: $(SRC_DIR)/%.cc | $(BUILD_DIR)
 	@mkdir -p $(dir $@)
 	@echo "🧩 编译 $<"
-	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
+	@$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
 
 $(BUILD_DIR)/%.o: $(TEST_DIR)/%.cpp | $(BUILD_DIR)
 	@mkdir -p $(dir $@)
 	@echo "🧩 编译 $<"
-	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
+	@$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
 
 
 # === 创建 build 目录 ===

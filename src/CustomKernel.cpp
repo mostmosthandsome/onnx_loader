@@ -1,9 +1,5 @@
 #include "CustomKernel.h"
-#ifdef MAC
-#include <OpenCL/opencl.h>
-#else
-#include <CL/cl.h>
-#endif
+
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -11,19 +7,12 @@
 #include <iostream>
 #include <iomanip>
 #include <vector>
-
+#include <thread>
+#include <mutex>
+#include <condition_variable>
 using namespace handsome;
 
 
-class MlpDataMemory
-{
-public:
-    ~MlpDataMemory();
-    int num_layers;
-    std::vector<cl_mem> weight_buff,bias_buff;
-    std::vector<int> rows,cols;
-    int input_dim,output_dim;
-};
 
 MlpDataMemory::~MlpDataMemory()
 {
@@ -34,63 +23,61 @@ MlpDataMemory::~MlpDataMemory()
 class CustomKernel::CustomKernelPrivate
 {
 public:
-    cl_platform_id platform;
     cl_device_id device;
-    cl_context context{NULL};
-    cl_command_queue queue{NULL};
+    cl_platform_id platform;
     cl_program program{NULL};
-    cl_kernel mat_kernel{NULL},elu_kernel{NULL},clip_kernel{NULL};
+    cl_kernel pure_mat_kernel{NULL},mat_elu_kernel{NULL},mat_clip_kernel{NULL}, mat_slice_kernel{NULL},ori_kernel{NULL};
     cl_uint ret_num_devices;
     cl_uint ret_num_platforms;
     cl_int err;
-    cl_mem input1_buff,input2_buff,elu_output_buff,gemm_output_buff;
-    int input1_dim,input2_dim,output_dim;
+    cl_mem temp_output_buff[2];
 
-    //model
-    std::shared_ptr<OnnxLoader> model_ptr;
-    //mlp_param
-    std::shared_ptr<MlpDataMemory> encoder_ptr,body_vel_ptr,fc_mu_ptr,actor_ptr;
-    cl_mem encoder_out_buff,body_vel_out_buff,fc_mu_out_buff,actor_in_buff;
-    //for mlp load and inference
-    /**
-     * @brief load the mlp_name weights and params to mlp_ptr from model_ptr
-    */
-    void load_mlp_params(std::shared_ptr<MlpDataMemory> mlp_ptr,std::string mlp_name);
+
+    //cl_mem
+    cl_mem encoder_out_buff,body_vel_out_buff,fc_mu_out_buff,actor_in_buff, final_out_buff;
+
 
     /**
-     * @brief do a inference of mlp_data_ptr, output will be put in gemm_output_buff
+     * @brief do a inference of mlp_data_ptr, output will be put in output_buff
      # TODO 加入自动识别功能，自动识别最后一层是不是elu
     */
-    void InferenceMlp(cl_mem input_buff,std::shared_ptr<MlpDataMemory> mlp_data_ptr);
+    void InferenceMlp(cl_command_queue &queue, cl_mem &input_buff, cl_mem &output_buff, std::shared_ptr<MlpDataMemory> mlp_data_ptr);
+    void inference_single_end_clip(cl_command_queue &queue, cl_mem &input_buff, cl_mem &output_buff, std::shared_ptr<MlpDataMemory> mlp_data_ptr, float clip_limit);
 
-    void copy_cl_mem(cl_mem src_mem,cl_mem dst_mem, int copy_size);
+    void copy_cl_mem(cl_command_queue &queue, cl_mem &src_mem,cl_mem &dst_mem, int copy_size);
 
-    void clip(cl_mem src_mem,cl_mem dst_mem, int clip_size);
+    void concat(cl_command_queue &queue, cl_mem &src1, int size1, cl_mem &src2, int size2, cl_mem &src3, int size3, cl_mem &dst);
 
-    void concat(cl_mem src1, int size1, cl_mem src2, int size2, cl_mem src3, int size3, cl_mem dst);
+    void concat(cl_command_queue &queue, cl_mem &src1, int size1, cl_mem &src2, int size2, cl_mem &dst);
+
+    void inference_ori_actor(cl_command_queue &queue, cl_mem &input_buff, cl_mem &output_buff, std::shared_ptr<MlpDataMemory> mlp_data_ptr);
+
+    void inference_with_slice_changed(cl_command_queue &queue, cl_mem &input_buff, cl_mem &output_buff, std::shared_ptr<MlpDataMemory> mlp_data_ptr, int slice_position);
+
 };
 
 CustomKernel::CustomKernel():data_ptr(std::make_unique<CustomKernelPrivate>())
 {
+
     /* 获取平台设备信息 */
     data_ptr->err = clGetPlatformIDs(1, &data_ptr->platform, &data_ptr->ret_num_platforms);
     data_ptr->err = clGetDeviceIDs(data_ptr->platform, CL_DEVICE_TYPE_GPU, 1, &data_ptr->device, &data_ptr->ret_num_devices);
 
     /* 创建 OpenCL 上下文 */
-    data_ptr->context = clCreateContext( NULL, 1, &data_ptr->device, NULL, NULL, &data_ptr->err);
+    context = clCreateContext( NULL, 1, &data_ptr->device, NULL, NULL, &data_ptr->err);
 
     /* 创建命令队列 */
-    data_ptr->queue = clCreateCommandQueue(data_ptr->context, data_ptr->device, 0, &data_ptr->err);
+    queue = clCreateCommandQueue(context, data_ptr->device, 0, &data_ptr->err);
 
-    data_ptr->elu_output_buff = clCreateBuffer(
-        data_ptr->context,
+    data_ptr->temp_output_buff[0] = clCreateBuffer(
+        context,
         CL_MEM_READ_WRITE,
         sizeof(float) * 512,
         NULL,
         &data_ptr->err
     );
-    data_ptr->gemm_output_buff = clCreateBuffer(
-        data_ptr->context,
+    data_ptr->temp_output_buff[1] = clCreateBuffer(
+        context,
         CL_MEM_READ_WRITE,
         sizeof(float) * 512,
         NULL,
@@ -102,22 +89,26 @@ CustomKernel::CustomKernel():data_ptr(std::make_unique<CustomKernelPrivate>())
 
 CustomKernel::~CustomKernel()
 {
+    
       /* 終了処理 */
-    data_ptr->err = clFlush(data_ptr->queue);
-    data_ptr->err = clFinish(data_ptr->queue);
-    data_ptr->err = clReleaseKernel(data_ptr->mat_kernel);
+    data_ptr->err = clFlush(queue);
+    data_ptr->err = clFinish(queue);
+    data_ptr->err = clReleaseKernel(data_ptr->pure_mat_kernel);
+    data_ptr->err = clReleaseKernel(data_ptr->mat_elu_kernel);
+    data_ptr->err = clReleaseKernel(data_ptr->mat_clip_kernel);
+    data_ptr->err = clReleaseKernel(data_ptr->mat_clip_kernel);
+    data_ptr->err = clReleaseKernel(data_ptr->mat_slice_kernel);
+
+
+    
     data_ptr->err = clReleaseProgram(data_ptr->program);
 
-    data_ptr->err = clReleaseCommandQueue(data_ptr->queue);
-    data_ptr->err = clReleaseContext(data_ptr->context);
+    data_ptr->err = clReleaseCommandQueue(queue);
+
+    data_ptr->err = clReleaseContext(context);
+    data_ptr->err = clReleaseMemObject(data_ptr->temp_output_buff[0]),data_ptr->err = clReleaseMemObject(data_ptr->temp_output_buff[1]);
 
 
-    data_ptr->err = clReleaseMemObject(data_ptr->input1_buff),data_ptr->err = clReleaseMemObject(data_ptr->input2_buff);
-    data_ptr->err = clReleaseMemObject(data_ptr->elu_output_buff),data_ptr->err = clReleaseMemObject(data_ptr->gemm_output_buff);
-    data_ptr->err = clReleaseMemObject(data_ptr->encoder_out_buff);
-    data_ptr->err = clReleaseMemObject(data_ptr->body_vel_out_buff);
-    data_ptr->err = clReleaseMemObject(data_ptr->fc_mu_out_buff);
-    data_ptr->err = clReleaseMemObject(data_ptr->actor_in_buff);
 }
 
 void CustomKernel::load_openCL_code(std::string file_name)
@@ -142,7 +133,7 @@ void CustomKernel::load_openCL_code(std::string file_name)
 
     //对读取到的代码进行编译，创建Program
     /* Create program from file */
-    data_ptr->program = clCreateProgramWithSource(data_ptr->context, 1, 
+    data_ptr->program = clCreateProgramWithSource(context, 1, 
         (const char**)&program_buffer, &program_size, &data_ptr->err);
     if(data_ptr->err < 0) {
         perror("Couldn't create the program");
@@ -151,8 +142,8 @@ void CustomKernel::load_openCL_code(std::string file_name)
     free(program_buffer);
 
     /* Build program */
-        data_ptr->err = clBuildProgram(data_ptr->program, 0, NULL, NULL, NULL, NULL);
-        if(data_ptr->err < 0) {
+    data_ptr->err = clBuildProgram(data_ptr->program, 0, NULL, NULL, NULL, NULL);
+    if(data_ptr->err < 0) {
 
         /* Find size of log and print to std output */
         clGetProgramBuildInfo(data_ptr->program, data_ptr->device, CL_PROGRAM_BUILD_LOG, 
@@ -167,127 +158,79 @@ void CustomKernel::load_openCL_code(std::string file_name)
     }
 
     /* Create kernel for the kernel function */
-    data_ptr->mat_kernel = clCreateKernel(data_ptr->program, "mat_kernel", &data_ptr->err);
+    data_ptr->pure_mat_kernel = clCreateKernel(data_ptr->program, "pure_mat_kernel", &data_ptr->err);
     
     if(data_ptr->err < 0) {
         perror("Couldn't create the mat kernel");
         exit(1);   
     }
 
-    data_ptr->elu_kernel = clCreateKernel(data_ptr->program, "elu_kernel", &data_ptr->err);
-    
+    data_ptr->mat_elu_kernel = clCreateKernel(data_ptr->program, "mat_elu_kernel", &data_ptr->err);
+
     if(data_ptr->err < 0) {
         perror("Couldn't create the elu kernel");
         exit(1);   
     }
     
-    data_ptr->clip_kernel = clCreateKernel(data_ptr->program, "clip_kernel", &data_ptr->err);
+    data_ptr->mat_clip_kernel = clCreateKernel(data_ptr->program, "mat_clip_kernel", &data_ptr->err);
     
     if(data_ptr->err < 0) {
         perror("Couldn't create the clip kernel");
         exit(1);   
     }
 
+    data_ptr->mat_slice_kernel = clCreateKernel(data_ptr->program, "mat_slice_kernel", &data_ptr->err);
+    
+    if(data_ptr->err < 0) {
+        perror("Couldn't create the slice kernel");
+        exit(1);   
+    }
+
+    data_ptr->ori_kernel = clCreateKernel(data_ptr->program, "ori_kernel", &data_ptr->err);
+    
+    if(data_ptr->err < 0) {
+        std::cout << "Couldn't create the ori kernel, err_code = " << data_ptr->err << std::endl;
+        exit(1);   
+    }
     return;
 }
 
 
-
-void CustomKernel::load_onnx_model(std::string file_name)
+void CustomKernel::concat(cl_mem &src1, int size1, cl_mem &src2, int size2, cl_mem &src3, int size3, cl_mem &dst)
 {
-    //create model
-    data_ptr->model_ptr = std::make_shared<OnnxLoader>(file_name);
-    data_ptr->encoder_ptr  = std::make_shared<MlpDataMemory>();
-    data_ptr->body_vel_ptr = std::make_shared<MlpDataMemory>();
-    data_ptr->fc_mu_ptr    = std::make_shared<MlpDataMemory>();
-    data_ptr->actor_ptr    = std::make_shared<MlpDataMemory>();
-
-    
-    //load the params of mlp 
-    data_ptr->load_mlp_params(data_ptr->actor_ptr,"actor");
-    data_ptr->load_mlp_params(data_ptr->encoder_ptr,"encoder");
-    data_ptr->load_mlp_params(data_ptr->body_vel_ptr,"est_explicit_layers.body_vel_buf");
-    data_ptr->load_mlp_params(data_ptr->fc_mu_ptr,"fc_mu");
-    std::cout << "load params finished\n";
-    //create intermediate temp buff
-    data_ptr->encoder_out_buff = clCreateBuffer(data_ptr->context, CL_MEM_READ_WRITE,
-        sizeof(float) * data_ptr->encoder_ptr->output_dim,
-        NULL, &data_ptr->err
-    );
-    data_ptr->body_vel_out_buff = clCreateBuffer(data_ptr->context, CL_MEM_READ_WRITE,
-        sizeof(float) * data_ptr->body_vel_ptr->output_dim,
-        NULL, &data_ptr->err
-    );
-    data_ptr->fc_mu_out_buff = clCreateBuffer(data_ptr->context, CL_MEM_READ_WRITE,
-        sizeof(float) * data_ptr->fc_mu_ptr->output_dim,
-        NULL, &data_ptr->err
-    );
-    data_ptr->actor_in_buff = clCreateBuffer(data_ptr->context, CL_MEM_READ_WRITE,
-        sizeof(float) * data_ptr->actor_ptr->input_dim,
-        NULL, &data_ptr->err
-    );
-
-    data_ptr->input1_dim = 54;//考虑到写起来太麻烦了，这里直接用数字写死
-    data_ptr->input2_dim = data_ptr->encoder_ptr->input_dim;
-    data_ptr->output_dim =  data_ptr->actor_ptr->output_dim;
-    
+    data_ptr->concat(queue, src1, size1, src2, size2, src3, size3, dst);
 }
 
-
-void CustomKernel::inference(float input1[], float input2[], float output[])
+void CustomKernel::concat(cl_mem &src1, int size1, cl_mem &src2, int size2, cl_mem &dst)
 {
-    // 创建输入的向量 buffer，并拷贝数据
-    data_ptr->input1_buff = clCreateBuffer(
-        data_ptr->context,
-        CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
-        sizeof(float) * data_ptr->input1_dim,
-        input1,
-        &data_ptr->err
-    );
-    if (data_ptr->err < 0) { perror("Couldn't create vec buffer"); exit(1); }
+    data_ptr->concat(queue, src1, size1, src2, size2, dst);
+}
 
-    data_ptr->input2_buff =  clCreateBuffer(
-        data_ptr->context,
-        CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
-        sizeof(float) * data_ptr->input2_dim,
-        input2,
-        &data_ptr->err
-    );
-    if (data_ptr->err < 0) { perror("Couldn't create vec buffer"); exit(1); }
+void CustomKernel::inference_mlp(cl_mem &input_buff, cl_mem &output_buff, std::shared_ptr<MlpDataMemory> mlp_data_ptr)
+{
+    data_ptr->InferenceMlp(queue, input_buff, output_buff, mlp_data_ptr);
+}
 
-    data_ptr->InferenceMlp(data_ptr->input2_buff,data_ptr->encoder_ptr);
-    data_ptr->copy_cl_mem(data_ptr->gemm_output_buff,data_ptr->encoder_out_buff, data_ptr->encoder_ptr->output_dim);
-    
-    data_ptr->InferenceMlp(data_ptr->encoder_out_buff,data_ptr->body_vel_ptr);
-    data_ptr->clip(data_ptr->gemm_output_buff,data_ptr->body_vel_out_buff, data_ptr->body_vel_ptr->output_dim);
+void CustomKernel::inference_single_end_clip(cl_mem &input_buff, cl_mem &output_buff, std::shared_ptr<MlpDataMemory> mlp_data_ptr, float clip_limit)
+{
+    data_ptr->inference_single_end_clip(queue, input_buff, output_buff, mlp_data_ptr, clip_limit);
+}
 
-    data_ptr->InferenceMlp(data_ptr->encoder_out_buff,data_ptr->fc_mu_ptr);
-    data_ptr->copy_cl_mem(data_ptr->gemm_output_buff,data_ptr->fc_mu_out_buff, data_ptr->fc_mu_ptr->output_dim);
+void CustomKernel::inference_ori_actor(cl_mem &input_buff, cl_mem &output_buff, std::shared_ptr<MlpDataMemory> mlp_data_ptr)
+{
+    data_ptr->inference_ori_actor(queue, input_buff, output_buff, mlp_data_ptr);
+}
 
-    data_ptr->concat(data_ptr->input1_buff, data_ptr->input1_dim, data_ptr->body_vel_out_buff, data_ptr->body_vel_ptr->output_dim, data_ptr->fc_mu_out_buff, data_ptr->fc_mu_ptr->output_dim, data_ptr->actor_in_buff);
-    data_ptr->InferenceMlp(data_ptr->actor_in_buff,data_ptr->actor_ptr);
-
-    // 6. 读回结果
-    data_ptr->err = clEnqueueReadBuffer(
-      data_ptr->queue,
-      data_ptr->gemm_output_buff,
-      CL_TRUE,
-      0,
-      sizeof(float) * data_ptr->output_dim,
-      output,
-      0,
-      NULL,
-      NULL
-  );
-
+void CustomKernel::inference_with_slice_changed(cl_mem &input_buff, cl_mem &output_buff, std::shared_ptr<MlpDataMemory> mlp_data_ptr, int slice_position)
+{
+    data_ptr->inference_with_slice_changed(queue, input_buff, output_buff, mlp_data_ptr, slice_position);
 }
 
 ///////////////////////////////////////////////////////////////////
 
 
-void CustomKernel::CustomKernelPrivate::load_mlp_params(std::shared_ptr<MlpDataMemory> mlp_ptr,std::string mlp_name)
+void CustomKernel::load_mlp_params(std::shared_ptr<OnnxLoader> model_ptr,std::shared_ptr<MlpDataMemory> mlp_ptr,std::string mlp_name)
 {
-    
     //先从创建好的模型中读取mlp数据
     std::shared_ptr<MlpParam> mlp_param_data = std::make_shared<MlpParam>();
     model_ptr->load_mlp_param(mlp_param_data,mlp_name);
@@ -313,9 +256,9 @@ void CustomKernel::CustomKernelPrivate::load_mlp_params(std::shared_ptr<MlpDataM
             CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
             sizeof(float) * out_dim * in_dim,
             flat_weight.data(),
-            &err
+            &data_ptr->err
         );
-        if (err < 0) {
+        if (data_ptr->err < 0) {
             perror(("Couldn't create weight_buff[" + std::to_string(i) + "]").c_str());
             exit(1);
         }
@@ -326,58 +269,101 @@ void CustomKernel::CustomKernelPrivate::load_mlp_params(std::shared_ptr<MlpDataM
             CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
             sizeof(float) * mlp_param_data->biases[i].size(),
             mlp_param_data->biases[i].data(),
-            &err
+            &data_ptr->err
         );
-        if (err < 0) {
+        if (data_ptr->err < 0) {
             perror(("Couldn't create bias_buff[" + std::to_string(i) + "]").c_str());
             exit(1);
         }   
     }
+    if(mlp_param_data->mul_param.size() > 0)
+    {
+        //mul param
+        mlp_ptr->mul_buff.resize(num_layers - 1),mlp_ptr->add_buff.resize(num_layers - 1);
+        for(int i = 0; i < num_layers - 1; ++i)
+        {
+            int out_dim = mlp_param_data->rows[i];
+            // 创建 mul buffer
+            mlp_ptr->mul_buff[i] = clCreateBuffer(
+                context,
+                CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
+                sizeof(float) * out_dim,
+                mlp_param_data->mul_param[i].data(),
+                &data_ptr->err
+            );
+            if (data_ptr->err < 0) {
+                perror(("Couldn't create mul_buff[" + std::to_string(i) + "]").c_str());
+                exit(1);
+            }   
+            // 创建 add buffer
+             mlp_ptr->add_buff[i] = clCreateBuffer(
+                context,
+                CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
+                sizeof(float) * out_dim,
+                mlp_param_data->add_param[i].data(),
+                &data_ptr->err
+            );
+            if( data_ptr->err < 0) {
+                perror(("Couldn't create add_buff[" + std::to_string(i) + "]").c_str());
+                exit(1);
+            }
+        }
+
+    }
 }
 
 
-void CustomKernel::CustomKernelPrivate::InferenceMlp(cl_mem input_buff,std::shared_ptr<MlpDataMemory> mlp_data_ptr)
+void CustomKernel::CustomKernelPrivate::InferenceMlp(cl_command_queue &queue, cl_mem &input_buff, cl_mem &output_buff, std::shared_ptr<MlpDataMemory> mlp_data_ptr)
 {
+    // size_t global_size[2];
     size_t global_size;
     cl_event kernel_event;
+    bool temp_out_id = 0;
+    cl_mem *now_input_buff = &input_buff;
     for(int i = 0; i < mlp_data_ptr->num_layers; ++i)
     {
-        global_size = mlp_data_ptr->rows[i];   // 每个 work-item 负责一行
-        //设置 kernel 参数
-        clSetKernelArg(mat_kernel, 0, sizeof(cl_mem), &mlp_data_ptr->weight_buff[i]);
-       
-        if(i == 0)  clSetKernelArg(mat_kernel, 1, sizeof(cl_mem), &input_buff);
-        else        clSetKernelArg(mat_kernel, 1, sizeof(cl_mem), &elu_output_buff);
-        clSetKernelArg(mat_kernel, 2, sizeof(cl_mem), &mlp_data_ptr->bias_buff[i]);
-        clSetKernelArg(mat_kernel, 3, sizeof(cl_mem), &gemm_output_buff);
-        clSetKernelArg(mat_kernel, 4, sizeof(int), &mlp_data_ptr->rows[i]);
-        clSetKernelArg(mat_kernel, 5, sizeof(int), &mlp_data_ptr->cols[i]);
-        err = clEnqueueNDRangeKernel(queue, mat_kernel, 1, NULL,
+        // global_size[0] = mlp_data_ptr->rows[i];
+        // global_size[1] = mlp_data_ptr->cols[i]; 
+        global_size = mlp_data_ptr->rows[i];  // 每个 work-item 负责一行        
+        if(i == mlp_data_ptr->num_layers - 1) //最后一层只有gemm，且直接输出到Output
+        {
+            clSetKernelArg(pure_mat_kernel, 0, sizeof(cl_mem), now_input_buff);
+            //设置 kernel 参数
+            clSetKernelArg(pure_mat_kernel, 1, sizeof(cl_mem), &mlp_data_ptr->weight_buff[i]);
+            clSetKernelArg(pure_mat_kernel, 2, sizeof(cl_mem), &mlp_data_ptr->bias_buff[i]);
+            clSetKernelArg(pure_mat_kernel, 3, sizeof(cl_mem), &output_buff);
+            clSetKernelArg(pure_mat_kernel, 4, sizeof(int), &mlp_data_ptr->rows[i]);
+            clSetKernelArg(pure_mat_kernel, 5, sizeof(int), &mlp_data_ptr->cols[i]);
+            err = (clEnqueueNDRangeKernel)(queue, pure_mat_kernel, 1, NULL,
+                                   &global_size, NULL, 0, NULL, 
+            &kernel_event);
+            // 等待 kernel 完成
+            clWaitForEvents(1, &kernel_event);
+        }
+        else
+        {
+            clSetKernelArg(mat_elu_kernel, 0, sizeof(cl_mem), now_input_buff);
+            //设置 kernel 参数
+            clSetKernelArg(mat_elu_kernel, 1, sizeof(cl_mem), &mlp_data_ptr->weight_buff[i]);
+            clSetKernelArg(mat_elu_kernel, 2, sizeof(cl_mem), &mlp_data_ptr->bias_buff[i]);
+            clSetKernelArg(mat_elu_kernel, 3, sizeof(cl_mem), &temp_output_buff[temp_out_id]);
+            clSetKernelArg(mat_elu_kernel, 4, sizeof(int), &mlp_data_ptr->rows[i]);
+            clSetKernelArg(mat_elu_kernel, 5, sizeof(int), &mlp_data_ptr->cols[i]);
+            err = (clEnqueueNDRangeKernel)(queue, mat_elu_kernel, 1, NULL,
                                     &global_size, NULL, 0, NULL, 
             &kernel_event);
-            
-        // 等待 kernel 完成
-        clWaitForEvents(1, &kernel_event);
-        if(i == mlp_data_ptr->num_layers - 1) break;
 
-        clSetKernelArg(elu_kernel, 0, sizeof(cl_mem), &gemm_output_buff);
-        clSetKernelArg(elu_kernel, 1, sizeof(cl_mem), &elu_output_buff);
-        clSetKernelArg(elu_kernel, 2, sizeof(int), &mlp_data_ptr->rows[i]);
-        err = clEnqueueNDRangeKernel(queue, elu_kernel, 1, NULL,
-                                    &global_size, NULL, 0, NULL, 
-            &kernel_event);
-
-
-        // 等待 kernel 完成
-        clWaitForEvents(1, &kernel_event);
-
+            // 等待 kernel 完成
+            clWaitForEvents(1, &kernel_event);
+            now_input_buff = &temp_output_buff[temp_out_id],temp_out_id = !temp_out_id;
+        }
       
     }
 }
 
-void CustomKernel::CustomKernelPrivate::copy_cl_mem(cl_mem src_mem, cl_mem dest_mem, int copy_size)
+void CustomKernel::CustomKernelPrivate::copy_cl_mem(cl_command_queue &queue, cl_mem &src_mem, cl_mem &dest_mem, int copy_size)
 {
-    // 从 gemm_output_buff 拷贝前 output_dim 部分到 encoder_out_buff
+    // 从 temp_output_buff[0] 拷贝前 output_dim 部分到 encoder_out_buff
     err = clEnqueueCopyBuffer(
         queue,                 // 命令队列
         src_mem,      // 源缓冲区
@@ -394,27 +380,12 @@ void CustomKernel::CustomKernelPrivate::copy_cl_mem(cl_mem src_mem, cl_mem dest_
     clFinish(queue);
 }
 
-void CustomKernel::CustomKernelPrivate::clip(cl_mem src_mem, cl_mem dst_mem, int clip_size)
-{
-    size_t global_size = clip_size;
-    cl_event kernel_event;
-    clSetKernelArg(clip_kernel, 0, sizeof(cl_mem), &src_mem);
-    clSetKernelArg(clip_kernel, 1, sizeof(cl_mem), &dst_mem);
-    clSetKernelArg(clip_kernel, 2, sizeof(int), &clip_size);
-    err = clEnqueueNDRangeKernel(queue, clip_kernel, 1, NULL,
-                                &global_size, NULL, 0, NULL, 
-        &kernel_event);
-
-
-    // 等待 kernel 完成
-    clWaitForEvents(1, &kernel_event);
-}
-
 void CustomKernel::CustomKernelPrivate::concat(
-    cl_mem src1, int size1,
-    cl_mem src2, int size2,
-    cl_mem src3, int size3,
-    cl_mem dst)
+    cl_command_queue &queue,
+    cl_mem &src1, int size1,
+    cl_mem &src2, int size2,
+    cl_mem &src3, int size3,
+    cl_mem &dst)
 {
     cl_int err;
     size_t offset = 0;
@@ -462,4 +433,179 @@ void CustomKernel::CustomKernelPrivate::concat(
 
     // 等待执行完毕
     clFinish(queue);
+}
+
+
+void CustomKernel::CustomKernelPrivate::concat(
+    cl_command_queue &queue,
+    cl_mem &src1, int size1,
+    cl_mem &src2, int size2,
+    cl_mem &dst)
+{
+    cl_int err;
+    size_t offset = 0;
+
+    // 元素字节大小（假设 float）
+    const size_t elem_size = sizeof(float);
+
+    // ---- 第1段 ----
+    err = clEnqueueCopyBuffer(
+        queue,
+        src1,
+        dst,
+        0,
+        offset,
+        elem_size * size1,    // ✅ 拷贝字节数
+        0, nullptr, nullptr);
+    if (err != CL_SUCCESS)
+        fprintf(stderr, "[concat] Copy src1 failed, err=%d\n", err);
+    offset += elem_size * size1;
+
+    // ---- 第2段 ----
+    err = clEnqueueCopyBuffer(
+        queue,
+        src2,
+        dst,
+        0,
+        offset,
+        elem_size * size2,    // ✅ 拷贝字节数
+        0, nullptr, nullptr);
+    if (err != CL_SUCCESS)
+        fprintf(stderr, "[concat] Copy src2 failed, err=%d\n", err);
+    offset += elem_size * size2;
+
+    // 等待执行完毕
+    clFinish(queue);
+}
+
+void CustomKernel::CustomKernelPrivate::inference_single_end_clip(cl_command_queue &queue, cl_mem &input_buff, cl_mem &output_buff, std::shared_ptr<MlpDataMemory> mlp_data_ptr,float clip_limit)
+{
+    size_t global_size = mlp_data_ptr->rows[0];
+    cl_event kernel_event;
+    clSetKernelArg(mat_clip_kernel, 0, sizeof(cl_mem), &input_buff);
+    //设置 kernel 参数
+    clSetKernelArg(mat_clip_kernel, 1, sizeof(cl_mem), &mlp_data_ptr->weight_buff[0]);
+    clSetKernelArg(mat_clip_kernel, 2, sizeof(cl_mem), &mlp_data_ptr->bias_buff[0]);
+    clSetKernelArg(mat_clip_kernel, 3, sizeof(cl_mem), &output_buff);
+    clSetKernelArg(mat_clip_kernel, 4, sizeof(int), &mlp_data_ptr->rows[0]);
+    clSetKernelArg(mat_clip_kernel, 5, sizeof(int), &mlp_data_ptr->cols[0]);
+    clSetKernelArg(mat_clip_kernel, 6, sizeof(float), &clip_limit);
+
+    err = (clEnqueueNDRangeKernel)(queue, mat_clip_kernel, 1, NULL,
+                            &global_size, NULL, 0, NULL, 
+    &kernel_event);
+    // 等待 kernel 完成
+    clWaitForEvents(1, &kernel_event);
+}
+
+void CustomKernel::CustomKernelPrivate::inference_ori_actor(cl_command_queue &queue, cl_mem &input_buff, cl_mem &output_buff, std::shared_ptr<MlpDataMemory> mlp_data_ptr)
+{
+     // size_t global_size[2];
+    size_t global_size;
+    cl_event kernel_event;
+    cl_mem *now_input_buff = &input_buff;
+    for(int i = 0; i < mlp_data_ptr->num_layers; ++i)
+    {
+        // global_size[0] = mlp_data_ptr->rows[i];
+        // global_size[1] = mlp_data_ptr->cols[i]; 
+        global_size = mlp_data_ptr->rows[i];  // 每个 work-item 负责一行        
+        if(i == mlp_data_ptr->num_layers - 1) //最后一层只有gemm，且直接输出到Output
+        {
+            clSetKernelArg(pure_mat_kernel, 0, sizeof(cl_mem), now_input_buff);
+            //设置 kernel 参数
+            clSetKernelArg(pure_mat_kernel, 1, sizeof(cl_mem), &mlp_data_ptr->weight_buff[i]);
+            clSetKernelArg(pure_mat_kernel, 2, sizeof(cl_mem), &mlp_data_ptr->bias_buff[i]);
+            clSetKernelArg(pure_mat_kernel, 3, sizeof(cl_mem), &output_buff);
+            clSetKernelArg(pure_mat_kernel, 4, sizeof(int), &mlp_data_ptr->rows[i]);
+            clSetKernelArg(pure_mat_kernel, 5, sizeof(int), &mlp_data_ptr->cols[i]);
+            err = (clEnqueueNDRangeKernel)(queue, pure_mat_kernel, 1, NULL,
+                                   &global_size, NULL, 0, NULL, 
+            &kernel_event);
+            // 等待 kernel 完成
+            clWaitForEvents(1, &kernel_event);
+        }
+        else
+        {
+            //先进行矩阵运算
+            clSetKernelArg(pure_mat_kernel, 0, sizeof(cl_mem), now_input_buff);
+            //设置 kernel 参数
+            clSetKernelArg(pure_mat_kernel, 1, sizeof(cl_mem), &mlp_data_ptr->weight_buff[i]);
+            clSetKernelArg(pure_mat_kernel, 2, sizeof(cl_mem), &mlp_data_ptr->bias_buff[i]);
+            clSetKernelArg(pure_mat_kernel, 3, sizeof(cl_mem), &temp_output_buff[0]);    
+            clSetKernelArg(pure_mat_kernel, 4, sizeof(int), &mlp_data_ptr->rows[i]);
+            clSetKernelArg(pure_mat_kernel, 5, sizeof(int), &mlp_data_ptr->cols[i]);
+            err = (clEnqueueNDRangeKernel)(queue, pure_mat_kernel, 1, NULL,
+                                   &global_size, NULL, 0, NULL, 
+            &kernel_event);
+            // 等待 kernel 完成
+            clWaitForEvents(1, &kernel_event);
+
+            //再进行 ori 操作
+            
+            clSetKernelArg(ori_kernel, 0, sizeof(cl_mem), &temp_output_buff[0]);
+            //设置 kernel 参数
+            clSetKernelArg(ori_kernel, 1, sizeof(cl_mem), &mlp_data_ptr->mul_buff[i]);
+            clSetKernelArg(ori_kernel, 2, sizeof(cl_mem), &mlp_data_ptr->add_buff[i]);
+
+            clSetKernelArg(ori_kernel, 3, sizeof(cl_mem), &temp_output_buff[1]);
+            clSetKernelArg(ori_kernel, 4, sizeof(int), &mlp_data_ptr->rows[i]);
+            err = (clEnqueueNDRangeKernel)(queue, ori_kernel, 1, NULL,
+                                    &global_size, NULL, 0, NULL, 
+            &kernel_event);
+
+            // 等待 kernel 完成
+            clWaitForEvents(1, &kernel_event);
+            now_input_buff = &temp_output_buff[1];
+        }
+      
+    }
+}
+
+void CustomKernel::CustomKernelPrivate::inference_with_slice_changed(cl_command_queue &queue, cl_mem &input_buff, cl_mem &output_buff, std::shared_ptr<MlpDataMemory> mlp_data_ptr, int slice_position)
+{
+    // size_t global_size[2];
+    size_t global_size;
+    cl_event kernel_event;
+    bool temp_out_id = 0;
+    cl_mem *now_input_buff = &input_buff;
+    for(int i = 0; i < mlp_data_ptr->num_layers; ++i)
+    {
+        // global_size[0] = mlp_data_ptr->rows[i];
+        // global_size[1] = mlp_data_ptr->cols[i]; 
+        global_size = mlp_data_ptr->rows[i];  // 每个 work-item 负责一行        
+        if(i == mlp_data_ptr->num_layers - 1) //最后一层只有gemm，且直接输出到Output
+        {
+            clSetKernelArg(mat_slice_kernel, 0, sizeof(cl_mem), now_input_buff);
+            //设置 kernel 参数
+            clSetKernelArg(mat_slice_kernel, 1, sizeof(cl_mem), &mlp_data_ptr->weight_buff[i]);
+            clSetKernelArg(mat_slice_kernel, 2, sizeof(cl_mem), &mlp_data_ptr->bias_buff[i]);
+            clSetKernelArg(mat_slice_kernel, 3, sizeof(cl_mem), &output_buff);
+            clSetKernelArg(mat_slice_kernel, 4, sizeof(int), &mlp_data_ptr->rows[i]);
+            clSetKernelArg(mat_slice_kernel, 5, sizeof(int), &mlp_data_ptr->cols[i]);
+            clSetKernelArg(mat_slice_kernel, 6, sizeof(int), &slice_position);
+            err = (clEnqueueNDRangeKernel)(queue, mat_slice_kernel, 1, NULL,
+                                   &global_size, NULL, 0, NULL, 
+            &kernel_event);
+            // 等待 kernel 完成
+            clWaitForEvents(1, &kernel_event);
+        }
+        else
+        {
+            clSetKernelArg(mat_elu_kernel, 0, sizeof(cl_mem), now_input_buff);
+            //设置 kernel 参数
+            clSetKernelArg(mat_elu_kernel, 1, sizeof(cl_mem), &mlp_data_ptr->weight_buff[i]);
+            clSetKernelArg(mat_elu_kernel, 2, sizeof(cl_mem), &mlp_data_ptr->bias_buff[i]);
+            clSetKernelArg(mat_elu_kernel, 3, sizeof(cl_mem), &temp_output_buff[temp_out_id]);
+            clSetKernelArg(mat_elu_kernel, 4, sizeof(int), &mlp_data_ptr->rows[i]);
+            clSetKernelArg(mat_elu_kernel, 5, sizeof(int), &mlp_data_ptr->cols[i]);
+            err = (clEnqueueNDRangeKernel)(queue, mat_elu_kernel, 1, NULL,
+                                    &global_size, NULL, 0, NULL, 
+            &kernel_event);
+
+            // 等待 kernel 完成
+            clWaitForEvents(1, &kernel_event);
+            now_input_buff = &temp_output_buff[temp_out_id],temp_out_id = !temp_out_id;
+        }
+      
+    }
 }

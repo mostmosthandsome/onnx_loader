@@ -1,0 +1,37 @@
+# toolchain-armv7a-openeuler.cmake
+
+# 1. 指定目标系统
+set(CMAKE_SYSTEM_NAME Linux)
+set(CMAKE_SYSTEM_PROCESSOR arm)
+
+# 2. sysroot
+set(SDK_TARGET_SYSROOT $ENV{SDKTARGETSYSROOT})
+set(CMAKE_SYSROOT ${SDK_TARGET_SYSROOT})
+set(CMAKE_FIND_ROOT_PATH ${SDK_TARGET_SYSROOT})
+
+# 3. 交叉编译器路径（仅命令，不带参数）
+# 假设命令在 PATH 中可找到
+set(CMAKE_C_COMPILER arm-ztkp_openeuler-linux-gnueabi-gcc)
+set(CMAKE_CXX_COMPILER arm-ztkp_openeuler-linux-gnueabi-g++)
+
+# 4. 汇编器
+set(CMAKE_ASM_COMPILER arm-ztkp_openeuler-linux-gnueabi-as)
+
+# 5. 工具链前缀
+set(CMAKE_C_COMPILER_TARGET $ENV{CROSS_COMPILE})
+
+# 6. 查找策略
+set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
+set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
+set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
+set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY)
+
+# 7. 从环境变量里提取编译选项，放到 CMake flags
+set(CMAKE_C_FLAGS  "$ENV{CFLAGS} $ENV{OECORE_TUNE_CCARGS} --sysroot=${SDK_TARGET_SYSROOT}" CACHE STRING "C flags" FORCE)
+set(CMAKE_CXX_FLAGS "$ENV{CXXFLAGS} $ENV{OECORE_TUNE_CCARGS} --sysroot=${SDK_TARGET_SYSROOT}" CACHE STRING "CXX flags" FORCE)
+set(CMAKE_EXE_LINKER_FLAGS "$ENV{LDFLAGS}" CACHE STRING "Linker flags" FORCE)
+set(CMAKE_SHARED_LINKER_FLAGS "$ENV{LDFLAGS}" CACHE STRING "Shared linker flags" FORCE)
+
+# 8. pkg-config 支持
+set(ENV{PKG_CONFIG_SYSROOT_DIR} ${SDK_TARGET_SYSROOT})
+set(ENV{PKG_CONFIG_PATH} "$ENV{PKG_CONFIG_SYSROOT_DIR}/usr/lib/pkgconfig:$ENV{PKG_CONFIG_SYSROOT_DIR}/usr/share/pkgconfig")
