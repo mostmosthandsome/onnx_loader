@@ -1,4 +1,5 @@
 #pragma once
+#include "ModelRunner.hpp"
 #include "CustomKernel.h"
 #include <thread>
 #include <condition_variable>
@@ -11,7 +12,7 @@
 namespace handsome
 {
 
-class ExploreVaeRunner
+class ExploreVaeRunner: virtual public ModelRunner
 {
 public:
     ExploreVaeRunner();
@@ -21,22 +22,16 @@ public:
      * @brief inference the model 
      * @param input the input vector, whose dimension should be 265
     */
-    void inference(float input1[], float input2[], float output[]);
-
-        /**
-     * @brief encode the history_input and update the encoder_out_buff, body_vel_out_buff, fc_mu_out_buff
-     */
-    void encode();        
+    virtual void inference(float input[], float output[]) override;
+      
     
     /**
      * @brief load onnx model from specified path（the structure should match the model defined in OnnxLoader.h, and load the params into cl_mem
     */
-    void load_onnx_model(std::string file_name);
+    virtual void load_onnx_model(std::string file_name) override;
 
 
 private:
-    //create a CustomKernel
-    CustomKernel kernel;
 
     //used for thread optimization
     bool stop_flag;
@@ -57,6 +52,11 @@ private:
     std::shared_ptr<MlpDataMemory> encoder_ptr,body_vel_ptr,fc_mu_ptr,actor_ptr;
     //dims
     int input1_dim,input2_dim,output_dim;    
+
+    /**
+     * @brief encode the history_input and update the encoder_out_buff, body_vel_out_buff, fc_mu_out_buff
+     */
+    void encode();  
 
 };
 }

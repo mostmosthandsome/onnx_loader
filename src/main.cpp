@@ -1,20 +1,32 @@
 #define _CRT_SECURE_NO_WARNINGS
 #include "ExploreVaeRunner.h"
 #include "PolicyHtOriRunner.h"
+#include "ModelRunner.hpp"
 #include <iostream>
 #include <iomanip>
 #include <cmath>
 #include <thread>
+#include <memory>
 
 using namespace std;
 int main()
 {
-  float input[288],output[12];
-  for(int i = 0; i < 288; ++i)  input[i] = i * 0.1;
-  handsome::PolicyHtOriRunner test_kernel;
-
-  test_kernel.load_onnx_model("config/policy_ht_ori.onnx");
-
+  float input[324],output[12];
+  for(int i = 0; i < 324; ++i)  input[i] = i * 0.1;
+  std::string model_path =  "config/explore_vae.onnx";
+  std::shared_ptr<handsome::ModelRunner> runner;
+  if(model_path.find("explore_vae") != string::npos)
+  {
+    handsome::ExploreVaeRunner* model1 = new handsome::ExploreVaeRunner();
+    runner = std::shared_ptr<handsome::ModelRunner>(model1);
+  }
+  else if(model_path.find("policy_ht_") != string::npos)
+  {
+    handsome::PolicyHtOriRunner* model2 = new handsome::PolicyHtOriRunner();
+    runner = std::shared_ptr<handsome::ModelRunner>(model2);
+  }
+  // std::shared_ptr<handsome::ExploreVaeRunner> runner = std::make_shared<handsome::ExploreVaeRunner>();
+  runner->load_onnx_model(model_path);
 
   clock_t start, end;
   double cpu_time_used = 0;
@@ -22,7 +34,7 @@ int main()
   for(int i = 0; i < test_case_num; ++i)
   {
     start = clock();   // ==== 开始计时 ====
-    test_kernel.inference(input, output);
+    runner->inference(input, output);
     end = clock();   // ==== 结束计时 ====
 
     this_thread::sleep_for(chrono::milliseconds(200));

@@ -2,9 +2,9 @@
 
 using namespace handsome;
 
-PolicyHtOriRunner::PolicyHtOriRunner()
+PolicyHtOriRunner::PolicyHtOriRunner():ModelRunner()
 {
-    kernel.load_openCL_code("src/mat_op.cl");
+    
 }
 
 PolicyHtOriRunner::~PolicyHtOriRunner()
@@ -21,6 +21,8 @@ PolicyHtOriRunner::~PolicyHtOriRunner()
     err = clReleaseMemObject(final_out_buff);
     err = clReleaseMemObject(input1_buff);
     err = clReleaseMemObject(actor_in_buff);
+    std::cout << "Release Mem finished\n";
+
 }
 
 

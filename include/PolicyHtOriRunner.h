@@ -1,4 +1,5 @@
 #pragma once
+#include "ModelRunner.hpp"
 #include "CustomKernel.h"
 #include <thread>
 #include <condition_variable>
@@ -11,7 +12,7 @@
 namespace handsome
 {
 
-class PolicyHtOriRunner
+class PolicyHtOriRunner:virtual public ModelRunner
 {
 public:
     PolicyHtOriRunner();
@@ -21,22 +22,20 @@ public:
      * @brief inference the model 
      * @param input the input vector, whose dimension should be 265
     */
-    void inference(float input[], float output[]);
-
-        /**
-     * @brief encode the history_input and update the encoder_out_buff, body_vel_out_buff, fc_mu_out_buff
-     */
-    void encode();        
+    virtual void inference(float input[], float output[]) override;
+    
     
     /**
      * @brief load onnx model from specified path（the structure should match the model defined in OnnxLoader.h, and load the params into cl_mem
     */
-    void load_onnx_model(std::string file_name);
+    virtual void load_onnx_model(std::string file_name) override;
 
 
 private:
-    //create a CustomKernel
-    CustomKernel kernel;
+    /**
+     * @brief encode the history_input and update the encoder_out_buff, body_vel_out_buff, fc_mu_out_buff
+     */
+    void encode();    
 
     //used for thread optimization
     bool stop_flag;

@@ -2,9 +2,9 @@
 
 using namespace handsome;
 
-ExploreVaeRunner::ExploreVaeRunner()
+ExploreVaeRunner::ExploreVaeRunner():ModelRunner()
 {
-    kernel.load_openCL_code("src/mat_op.cl");
+    
 }
 
 ExploreVaeRunner::~ExploreVaeRunner()
@@ -13,8 +13,7 @@ ExploreVaeRunner::~ExploreVaeRunner()
     stop_flag = true;
     encode_ready_flag = true;
     v.notify_one();
-    encode_thread.join();
-
+    if (encode_thread.joinable())    encode_thread.join();
     err = clReleaseMemObject(input1_buff),err = clReleaseMemObject(input2_buff);
     err = clReleaseMemObject(encoder_out_buff);
     err = clReleaseMemObject(body_vel_out_buff);
@@ -78,8 +77,10 @@ void ExploreVaeRunner::load_onnx_model(std::string file_name)
 }
 
 
-void ExploreVaeRunner::inference(float input1[], float input2[], float output[])
+void ExploreVaeRunner::inference(float input[], float output[]) 
 {
+    float input1[input1_dim];
+    for(int i = 0; i < input1_dim; ++i)  input1[i] = input[i];
     cl_int err;
     std::unique_lock<std::mutex> lock(mtx);
     if(!inference_ready_flag)   v.wait(lock);
@@ -123,8 +124,7 @@ void ExploreVaeRunner::inference(float input1[], float input2[], float output[])
         std::cout << "err = " << err << std::endl;
         perror("Couldn't read output buffer"); exit(1);
     }
-    for(int i = input1_dim; i < input2_dim; ++i)    history_input[i] = input2[i];
-    for(int i = 0; i < input1_dim; ++i)  history_input[i] = input1[i - input1_dim];
+    for(int i = 0; i < input2_dim; ++i)    history_input[i] = input[i];
     //fresh history
 
     inference_ready_flag = false, encode_ready_flag = true;
